@@ -56,14 +56,23 @@ describe("AnalysisCache", () => {
     expect(cache.stats().persistent).toBeLessThanOrEqual(PERSISTENT_LIMIT);
   });
 
-  it("never persists a guess", () => {
+  it("remembers a negative result so the endpoints are not re-queried forever", () => {
+    // A heuristic entry means every provider came back empty. Persisting it is
+    // deliberate: otherwise the same track re-queries the internal services on
+    // every play, for an answer we already have.
     const storage = memoryStorage();
     const cache = new AnalysisCache(storage);
     cache.set(uri(1), analysis({ uri: uri(1), source: "heuristic" }));
     cache.flush();
-    expect(cache.stats().persistent).toBe(0);
-    // But it is still available while it is hot.
+    expect(cache.stats().persistent).toBe(1);
     expect(cache.get(uri(1))).not.toBeNull();
+  });
+
+  it("never persists a result with no source at all", () => {
+    const cache = new AnalysisCache(memoryStorage());
+    cache.set(uri(2), analysis({ uri: uri(2), source: "none" }));
+    cache.flush();
+    expect(cache.stats().persistent).toBe(0);
   });
 
   it("restores from storage across instances", () => {

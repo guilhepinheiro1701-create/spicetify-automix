@@ -1,9 +1,12 @@
 import type { FadeCurve, TransitionStyle } from "../core/types.js";
+import type { DjIntent } from "./intent.js";
 import type { LogLevel } from "../core/logger.js";
 
 /** Everything the user can change, in one place. */
 export interface Settings {
   enabled: boolean;
+  /** What kind of set you want. Moves the engine's priorities, not just its clamps. */
+  intent: DjIntent;
   style: TransitionStyle;
 
   /** 0..1 — how far the engine is allowed to push toward long, obvious mixes. */
@@ -14,7 +17,8 @@ export interface Settings {
   beatMatching: boolean;
   harmonicMixing: boolean;
   phraseMatching: boolean;
-  smartEq: boolean;
+  /** Front-load the fade so the outgoing track clears out sooner. Not an EQ. */
+  fadeShaping: boolean;
   energyMatching: boolean;
   loudnessNormalization: boolean;
 
@@ -54,6 +58,7 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   enabled: true,
+  intent: "balanced",
   style: "dj",
 
   intensity: 0.6,
@@ -63,7 +68,7 @@ export const DEFAULT_SETTINGS: Settings = {
   beatMatching: true,
   harmonicMixing: true,
   phraseMatching: true,
-  smartEq: true,
+  fadeShaping: true,
   energyMatching: true,
   loudnessNormalization: true,
 

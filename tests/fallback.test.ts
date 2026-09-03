@@ -145,7 +145,7 @@ describe("plans degrade rather than disappear", () => {
       // Beatmatching is impossible on every tier and must never be marked applied.
       expect(p.bpmAdjustmentApplied).toBe(false);
       // EQ is never truly applied, so it must always be flagged as approximated.
-      if (p.eq.enabled) expect(p.eq.approximated).toBe(true);
+      if (p.shaping.enabled) expect(p.shaping.approximated).toBe(true);
       // Per-track gain is not available on any current client.
       expect(p.gain.perTrackSupported).toBe(false);
     }

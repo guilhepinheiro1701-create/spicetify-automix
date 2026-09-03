@@ -8,7 +8,7 @@ modal, so it reads as part of the client rather than beside it.
 
 The code splits into layers that only talk downward. The engine has no idea
 Spotify exists; the platform layer has no idea what a Camelot code is. That is
-what makes the algorithm testable without a Spotify client — 239 unit tests run in
+what makes the algorithm testable without a Spotify client — 297 unit tests run in
 Node with no browser and no mocking of Spicetify, and `npm run smoke` boots the
 real bundle against a stubbed client to cover the layers that are not pure.
 
@@ -25,11 +25,12 @@ src/
 ├── config/
 │   ├── defaults.ts             the Settings shape and its defaults
 │   ├── settings.ts             validated, persisted, observable store
+│   ├── intent.ts               DJ intent → scoring weights and blend floor
 │   └── styles.ts               Smooth / DJ / Energetic / Chill / Seamless / Custom
 │
 ├── platform/                   the only code that touches `Spicetify`
 │   ├── spicetify.ts            defensive façade — probes, never assumes
-│   ├── capabilities.ts         runtime ✅/⚠️/❌ detection → tier
+│   ├── capabilities.ts         THE capability layer: flags, reasons, tier
 │   └── nativeCrossfade.ts      four write paths to Spotify's own mixer
 │
 ├── music/                      pure music theory, zero I/O
@@ -48,9 +49,10 @@ src/
 │   └── analyzer.ts             orchestration, merging, dedup, prefetch
 │
 ├── engine/                     pure computation: analyses in, plan out
-│   ├── bands.ts                PERFECT…POOR, and what each permits
+│   ├── bands.ts                PERFECT…VERY POOR, and what each permits
 │   ├── scoring.ts              weighted model with hard-constraint caps
-│   ├── strategy.ts             eight characters, and the mechanism for each
+│   ├── confidence.ts           will it SOUND good, given the approach chosen
+│   ├── strategy.ts             nine characters, and the mechanism for each
 │   └── transitionEngine.ts     calculateTransition(A, B) → TransitionPlan
 │
 ├── audio/                      the only code that changes playback
@@ -59,14 +61,18 @@ src/
 │   └── audioEngine.ts          the fallback ladder
 │
 ├── queue/
-│   └── setlist.ts              A→B→C→D→E chain scoring, weak links, opt-in reorder
+│   ├── setlist.ts              chain scoring, cliff detection, optimizeSequence
+│   └── trajectory.ts           the set's energy shape: building / peaking / releasing
 │
 ├── runtime/
 │   ├── scheduler.ts            two-stage, self-correcting firing
+│   ├── memory.ts               versioned per-pair decision cache
+│   ├── diagnostics.ts          local counters and the session log
 │   └── smartDj.ts              the one stateful controller
 │
 └── ui/
     ├── panel.ts                the Smart DJ panel
+    ├── explainer.ts            the why-this-transition checklist
     ├── debugOverlay.ts         live HUD
     ├── components.ts           DOM builders
     └── styles.ts               themed via --spice-* custom properties
@@ -82,6 +88,7 @@ songchange
     │                                │
     ▼                                │
 calculateTransition ◄────────────────┘
+    │   DJ intent → scoring weights and blend floor
     │   classify both structures → mixable runway
     │   score the pair; hard failures cap rather than average
     │   band + energy direction + runway → strategy and mechanism
@@ -90,6 +97,7 @@ calculateTransition ◄────────────────┘
     │   pull the trigger early by B's own grid phase
     │   pick the entry cue in track B
     │   re-score at the final geometry
+    │   musical confidence, and a verdict per feature
     ▼
 TransitionPlan
     │
@@ -113,6 +121,30 @@ a plan. It reads no globals and touches no playback. Every interesting
 behaviour — refusing a bad pair, shortening a blend, choosing a cue — is
 therefore reachable from a unit test with plain data. The parts that *must*
 touch the client (platform, audio, runtime) are deliberately thin.
+
+### Why there is one capability layer
+
+`Spicetify.Platform` is typed `any` and changes shape between Spotify versions.
+Rather than scattering `typeof x === "function"` checks through the codebase,
+one module probes the live client and publishes a flat set of booleans plus a
+machine-readable reason for every absence. Every other module asks it.
+
+That is what makes the project survivable: when Spotify removes something,
+exactly one file notices, and each decision downstream degrades on its own. It
+is also what makes the capability regression tests possible — they flip a flag
+and assert nothing calls the missing API.
+
+### Why technical fit and musical confidence are separate numbers
+
+`compatibility.overall` says how much two tracks can be *overlapped*. It is not
+a verdict on the pairing: a DJ moving from 90 BPM hip-hop into 145 BPM drum and
+bass is making a contrast, not a mistake.
+
+So `musicalConfidence` answers the second question — *given the approach we
+chose, will it sound good?* A short, phrase-timed switch between incompatible
+records scores high there; a long blend over a mediocre match scores low. Without
+that split the engine is timid, apologising with a fade where it should be
+cutting with intent.
 
 ### Why capabilities are probed, not assumed
 

@@ -17,6 +17,13 @@ export const TEMPO_TOLERANCE_COMFORT = 3;
 export const TEMPO_TOLERANCE_GOOD = 6;
 /** Outer limit of same-genre mixing. */
 export const TEMPO_TOLERANCE_MAX = 8;
+/**
+ * Past this, after half/double-time folding has already found the kindest
+ * reading, no overlap works: with no rate control the two pulses simply play
+ * over one another. The engine refuses to blend here and the setlist analyser
+ * calls it a cliff — one constant so they cannot disagree.
+ */
+export const TEMPO_UNMIXABLE_PERCENT = 12;
 
 export interface TempoMatch {
   /** 0..1 */

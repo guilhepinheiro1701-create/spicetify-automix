@@ -1,7 +1,12 @@
 import type { Section, TrackAnalysis, TrackRef } from "../src/core/types.js";
 import { buildPhraseGrid } from "../src/analysis/structure.js";
 import { DEFAULT_SETTINGS, type Settings } from "../src/config/defaults.js";
-import type { CapabilitySet } from "../src/platform/capabilities.js";
+import type {
+  CapabilityFlags,
+  CapabilityId,
+  CapabilitySet,
+  UnavailableReason,
+} from "../src/platform/capabilities.js";
 
 export function track(over: Partial<TrackRef> = {}): TrackRef {
   return {
@@ -108,26 +113,82 @@ export function settings(over: Partial<Settings> = {}): Settings {
   return { ...DEFAULT_SETTINGS, ...over };
 }
 
-const capability = (status: "available" | "partial" | "unavailable") => ({
-  id: "x",
-  label: "x",
-  status,
-  detail: "",
-});
+/**
+ * Build a capability set for a tier. Tests that need one capability flipped
+ * pass an override, which is how the capability-regression suite proves that
+ * nothing is called when a capability is absent.
+ */
+export function capabilities(
+  tier: "dj" | "fade" | "passive" = "dj",
+  overrides: Partial<CapabilityFlags> = {},
+): CapabilitySet {
+  const base: CapabilityFlags = {
+    audioAnalysis: true,
+    audioFeatures: true,
+    crossfade: tier === "dj",
+    volumeControl: tier !== "passive",
+    queueRead: true,
+    queueWrite: true,
+    preciseTiming: true,
+    playbackRate: false,
+    dsp: false,
+    perTrackGain: false,
+  };
+  const flags: CapabilityFlags = { ...base, ...overrides };
 
-export function capabilities(tier: "dj" | "fade" | "passive" = "dj"): CapabilitySet {
+  const labels: Record<CapabilityId, string> = {
+    audioAnalysis: "Beat grid, bars and sections",
+    audioFeatures: "Energy, valence and danceability",
+    crossfade: "Real audio overlap",
+    volumeControl: "Volume automation",
+    queueRead: "Next-track lookahead",
+    queueWrite: "Queue reordering",
+    preciseTiming: "Millisecond playback position",
+    playbackRate: "Playback-rate change (true beatmatching)",
+    dsp: "EQ, filters and effects on the stream",
+    perTrackGain: "Independent gain per overlapping track",
+  };
+  const reasons: Partial<Record<CapabilityId, UnavailableReason>> = {
+    crossfade: "crossfade-not-writable",
+    volumeControl: "api-missing",
+    queueWrite: "api-missing",
+    playbackRate: "playback-rate-unavailable",
+    dsp: "dsp-unavailable",
+    perTrackGain: "single-fader-only",
+    audioAnalysis: "api-missing",
+    audioFeatures: "api-missing",
+    queueRead: "api-missing",
+    preciseTiming: "api-missing",
+  };
+
+  const capabilities = Object.fromEntries(
+    (Object.keys(flags) as CapabilityId[]).map((id) => [
+      id,
+      {
+        id,
+        label: labels[id],
+        status: flags[id] ? "available" : "unavailable",
+        reason: flags[id] ? null : (reasons[id] ?? "api-missing"),
+        detail: flags[id] ? "available in this test" : "absent in this test",
+      },
+    ]),
+  ) as CapabilitySet["capabilities"];
+
+  const derivedTier: CapabilitySet["tier"] = flags.crossfade
+    ? "dj"
+    : flags.volumeControl
+      ? "fade"
+      : "passive";
+
   return {
     probedAt: Date.now(),
-    productTier: tier === "dj" ? "premium" : "free",
-    nativeCrossfade: capability(tier === "dj" ? "available" : "unavailable"),
-    volumeAutomation: capability(tier === "passive" ? "unavailable" : "partial"),
-    audioAnalysis: capability("partial"),
-    queueLookahead: capability("available"),
-    preciseTiming: capability("available"),
-    tempoControl: capability("unavailable"),
-    audioDsp: capability("unavailable"),
-    perTrackGain: capability("unavailable"),
-    tier,
+    productTier: derivedTier === "dj" ? "premium" : "free",
+    spicetifyVersion: "2.99.0-test",
+    spotifyVersion: "1.2.99.0",
+    platform: "linux",
+    capabilities,
+    flags,
+    tier: derivedTier,
   };
 }
 

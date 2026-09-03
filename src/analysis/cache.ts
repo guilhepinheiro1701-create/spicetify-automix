@@ -25,6 +25,18 @@ export const MEMORY_LIMIT = 60;
 export const PERSISTENT_LIMIT = 600;
 const WRITE_DEBOUNCE_MS = 4000;
 
+/**
+ * How long a "nothing knows about this track" result stands before the
+ * providers are asked again.
+ *
+ * Without this, a track the analysis services have no data for is re-queried
+ * every single time it plays — a stream of 404s against internal endpoints for
+ * an answer we already have. With it, the negative result is remembered like
+ * any other, but not forever: Spotify does backfill analysis, so a week later
+ * it is worth another try.
+ */
+export const NEGATIVE_RESULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** Fields dropped before persisting. */
 type Heavy = "beats" | "bars" | "segments";
 export type CompactAnalysis = Omit<TrackAnalysis, Heavy>;
@@ -86,11 +98,26 @@ export class AnalysisCache {
       return hot;
     }
     const cold = this.disk.get(uri);
-    return cold ? (cold as TrackAnalysis) : null;
+    if (!cold) return null;
+    if (this.isStaleNegative(cold)) {
+      this.disk.delete(uri);
+      this.dirty = true;
+      return null;
+    }
+    return cold as TrackAnalysis;
+  }
+
+  /** A remembered "no data" result that has aged out and deserves another try. */
+  private isStaleNegative(entry: CompactAnalysis): boolean {
+    return (
+      entry.source === "heuristic" && Date.now() - (entry.fetchedAt ?? 0) > NEGATIVE_RESULT_TTL_MS
+    );
   }
 
   has(uri: string): boolean {
-    return this.memory.has(uri) || this.disk.has(uri);
+    if (this.memory.has(uri)) return true;
+    const cold = this.disk.get(uri);
+    return cold !== undefined && !this.isStaleNegative(cold);
   }
 
   set(uri: string, analysis: TrackAnalysis): void {
@@ -101,9 +128,11 @@ export class AnalysisCache {
       this.memory.delete(oldest);
     }
 
-    // Never persist a guess: a heuristic entry would poison the cache for a
-    // track that might get real analysis on the next attempt.
-    if (analysis.source === "heuristic" || analysis.source === "none") return;
+    // A heuristic result means every provider came back empty. That is worth
+    // remembering — otherwise the same track re-queries the internal endpoints
+    // every time it plays, for an answer we already have. It is remembered with
+    // a TTL rather than permanently, because Spotify does backfill analysis.
+    if (analysis.source === "none") return;
 
     this.disk.delete(uri);
     this.disk.set(uri, compact(analysis));
@@ -150,6 +179,15 @@ export class AnalysisCache {
     this.memory.clear();
     this.disk.clear();
     this.dirty = true;
+    this.flush();
+  }
+
+  /** Flush and stop, leaving no timer running against a discarded cache. */
+  dispose(): void {
+    if (this.writeTimer !== null) {
+      clearTimeout(this.writeTimer);
+      this.writeTimer = null;
+    }
     this.flush();
   }
 

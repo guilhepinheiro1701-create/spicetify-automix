@@ -17,14 +17,30 @@ import { calculateTransition } from "../engine/transitionEngine.js";
 import { AudioEngine } from "../audio/audioEngine.js";
 import { TransitionScheduler } from "./scheduler.js";
 import { SetlistPlanner, type SetlistReport } from "../queue/setlist.js";
+import { TransitionMemory } from "./memory.js";
+import { Diagnostics } from "./diagnostics.js";
 import * as player from "../platform/spicetify.js";
 import { probeCapabilities, type CapabilitySet } from "../platform/capabilities.js";
 import { setNativeCrossfade, getCrossfadeState } from "../platform/nativeCrossfade.js";
 import type { MusicAnalyzer } from "../analysis/analyzer.js";
 import type { SettingsStore } from "../config/settings.js";
-import type { TransitionPlan, TransitionStatus, TrackRef } from "../core/types.js";
+import type {
+  TrackRef,
+  TrackStructure,
+  TransitionPlan,
+  TransitionStatus,
+} from "../core/types.js";
 
 const log = createLogger("smartdj");
+
+/** Which structural section a time sits in, for the session log. */
+function sectionRoleAt(structure: TrackStructure | null, timeSec: number): string {
+  if (!structure?.known) return "unknown";
+  for (const section of structure.sections) {
+    if (timeSec >= section.startSec && timeSec < section.endSec) return section.role;
+  }
+  return timeSec <= 0.5 ? "intro" : "unknown";
+}
 
 /** Do not attempt anything on a track shorter than this. */
 const MIN_TRACK_SEC = 25;
@@ -41,6 +57,8 @@ export class SmartDj {
   readonly events = new Emitter<SmartDjEvents>();
   readonly audio = new AudioEngine();
   readonly setlist: SetlistPlanner;
+  readonly memory: TransitionMemory;
+  readonly diagnostics = new Diagnostics();
 
   private scheduler: TransitionScheduler;
   private capabilities: CapabilitySet | null = null;
@@ -71,14 +89,17 @@ export class SmartDj {
   private lastSetlist: SetlistReport | null = null;
   /** Reorders performed for the currently playing track, to bound the replan loop. */
   private reordersThisTrack = 0;
+  private settleTimer: ReturnType<typeof setTimeout> | null = null;
   /** URIs we have already promoted, so we never shuffle the same track twice. */
   private promoted = new Set<string>();
 
   constructor(
     private readonly analyzer: MusicAnalyzer,
     private readonly settings: SettingsStore,
+    storage: { get(k: string): string | null; set(k: string, v: string): void } | null = null,
   ) {
     this.setlist = new SetlistPlanner(analyzer);
+    this.memory = new TransitionMemory(storage);
     this.scheduler = new TransitionScheduler({
       position: () => player.getProgressMs(),
       playing: () => player.isPlaying(),
@@ -106,6 +127,7 @@ export class SmartDj {
     this.started = true;
 
     this.capabilities = await probeCapabilities();
+    this.diagnostics.setCrossfadeAvailable(this.capabilities.flags.crossfade);
     const xf = getCrossfadeState();
     this.originalCrossfade = { enabled: xf.enabled, durationSec: xf.durationSec };
 
@@ -150,11 +172,16 @@ export class SmartDj {
   }
 
   stop(): void {
+    if (this.settleTimer !== null) {
+      clearTimeout(this.settleTimer);
+      this.settleTimer = null;
+    }
     this.disarm("stopped");
     this.audio.abort("stopped");
     for (const un of this.unsubscribers) un();
     this.unsubscribers = [];
     this.audio.dispose();
+    this.memory.dispose();
     this.restoreCrossfade();
     // Leave nothing behind that a later start() would inherit.
     this.plan = null;
@@ -259,6 +286,7 @@ export class SmartDj {
 
       if (settings.queueReordering && report.reorderable && this.reordersThisTrack < 2) {
         const moved = await this.tryReorder(report);
+        this.diagnostics.noteQueueReorder(moved);
         if (moved) {
           this.reordersThisTrack++;
           // The queue changed underneath us; replan against the new next track.
@@ -277,6 +305,8 @@ export class SmartDj {
       });
 
       this.plan = plan;
+      this.diagnostics.notePlanned(plan);
+      this.memory.remember(plan, settings.intent);
       this.events.emit("plan", { plan });
 
       if (plan.executor === "passive" || plan.durationSec <= 0) {
@@ -422,8 +452,22 @@ export class SmartDj {
       );
     }
 
+    const fromStructure = this.analyzer.peek(plan.from.uri)?.structure ?? null;
+    const toStructure = plan.to ? (this.analyzer.peek(plan.to.uri)?.structure ?? null) : null;
+    const logIndex = this.diagnostics.beginTransition(
+      plan,
+      sectionRoleAt(fromStructure, plan.startPointSec),
+      sectionRoleAt(toStructure, plan.entryPointSec),
+    );
+
     const token = this.planToken;
     const outcome = await this.audio.execute(plan);
+    this.diagnostics.endTransition(
+      logIndex,
+      outcome.status,
+      this.audio.lastExecutorId ?? "none",
+      outcome.note,
+    );
 
     // The songchange that follows a successful switch replans, which supersedes
     // this run. Do not stamp stale status over the fresh plan.
@@ -437,7 +481,9 @@ export class SmartDj {
 
     // The songchange event that follows the switch will reset everything; this
     // is just so the UI does not sit on "transitioning" if that event is late.
-    setTimeout(() => {
+    if (this.settleTimer !== null) clearTimeout(this.settleTimer);
+    this.settleTimer = setTimeout(() => {
+      this.settleTimer = null;
       if (this.status.phase === "recovering") this.setStatus({ phase: "idle", progress: 0 });
     }, 2500);
   }

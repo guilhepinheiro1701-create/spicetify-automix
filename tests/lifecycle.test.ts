@@ -149,10 +149,10 @@ describe("plans stay internally consistent", () => {
       });
       expect(p.bpmAdjustmentApplied).toBe(false);
       expect(p.gain.perTrackSupported).toBe(false);
-      if (p.eq.enabled) {
-        expect(p.eq.approximated).toBe(true);
+      if (p.shaping.enabled) {
+        expect(p.shaping.approximated).toBe(true);
         // The overlap path cannot shape anything at all, and must say so.
-        if (p.executor === "native-crossfade") expect(p.eq.shaping).toBe("not-applicable");
+        if (p.executor === "native-crossfade") expect(p.shaping.shaping).toBe("not-applicable");
       }
     }
   });
@@ -186,7 +186,14 @@ describe("queue reordering safety", () => {
       if (seen[seen.length - 1] !== b.band) seen.push(b.band);
       expect(pct).toBeGreaterThanOrEqual(b.min);
     }
-    expect(seen).toEqual(["perfect", "excellent", "good", "acceptable", "poor"]);
+    expect(seen).toEqual([
+      "perfect",
+      "excellent",
+      "good",
+      "acceptable",
+      "poor",
+      "very-poor",
+    ]);
   });
 
   it("a band that scores worse never permits a longer blend", async () => {

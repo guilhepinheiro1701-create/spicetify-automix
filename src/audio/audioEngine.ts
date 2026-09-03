@@ -41,6 +41,8 @@ export class AudioEngine {
   private readonly passive = new PassiveExecutor();
   private controller: AbortController | null = null;
   private running = false;
+  /** Which rung last executed, so diagnostics can spot a degradation. */
+  private lastExecutor: string | null = null;
 
   constructor() {
     this.automation = new VolumeAutomation({ get: getVolume, set: setVolume });
@@ -53,6 +55,10 @@ export class AudioEngine {
 
   get isRunning(): boolean {
     return this.running;
+  }
+
+  get lastExecutorId(): string | null {
+    return this.lastExecutor;
   }
 
   /**
@@ -88,6 +94,7 @@ export class AudioEngine {
         }
 
         this.events.emit("start", { plan, executor: executor.id });
+        this.lastExecutor = executor.id;
         const outcome = await executor.run(plan, ctx);
         lastNote = outcome.note;
 
@@ -105,6 +112,7 @@ export class AudioEngine {
         if (signal.aborted) break;
       }
 
+      this.lastExecutor = "none";
       const fallback: ExecutionOutcome = { status: "failed", note: lastNote };
       this.events.emit("finish", { plan, outcome: fallback, executor: "none" });
       return fallback;

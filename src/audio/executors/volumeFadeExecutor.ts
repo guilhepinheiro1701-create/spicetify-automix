@@ -76,7 +76,7 @@ export class VolumeFadeExecutor implements TransitionExecutor {
       // The plan wanted the low end out of the way first. We cannot filter, but
       // front-loading the ramp clears the outgoing track sooner, which is the
       // audible half of the same gesture.
-      const outCurve = plan.eq.shaping === "front-loaded-fade" ? "exponential" : plan.curve;
+      const outCurve = plan.shaping.shaping === "front-loaded-fade" ? "exponential" : plan.curve;
 
       // ── 1. Fade out ──────────────────────────────────────────────────────
       const outcome = await this.automation.ramp({
@@ -197,10 +197,20 @@ function waitForTrackChange(
       resolve(value);
     };
     const timer = setInterval(() => {
-      if (signal.aborted) return finish(null);
-      const now = getCurrentTrack()?.uri ?? null;
-      if (now !== null && now !== previousUri) return finish(Date.now() - started);
-      if (Date.now() - started >= SWITCH_TIMEOUT_MS) return finish(null);
+      // The timeout check has to come first and the read has to be guarded: if
+      // the client's API throws, an unguarded read would escape the callback,
+      // the timeout would never be reached, and this interval would run for the
+      // rest of the session against a promise nobody ever resolves.
+      if (signal.aborted || Date.now() - started >= SWITCH_TIMEOUT_MS) {
+        return finish(null);
+      }
+      let now: string | null = null;
+      try {
+        now = getCurrentTrack()?.uri ?? null;
+      } catch {
+        return; // client is unhappy; wait it out and let the timeout decide
+      }
+      if (now !== null && now !== previousUri) finish(Date.now() - started);
     }, SWITCH_POLL_MS);
   });
 }

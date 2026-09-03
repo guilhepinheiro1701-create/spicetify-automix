@@ -7,16 +7,33 @@
  *
  * The thresholds are set where the *audible* behaviour should change:
  *
- *  - **Perfect / Excellent** — the pair beatmatches by luck and agrees
- *    harmonically. A long, obvious mix is safe; anything shorter wastes it.
+ *  - **Perfect / Excellent** — the two tempos already agree closely enough to
+ *    sit together, and the keys do too. A long, obvious mix is safe; anything
+ *    shorter wastes it. (Nothing is beatmatched: no rate control exists here.
+ *    The tempos have to have arrived compatible on their own.)
  *  - **Good** — one dimension is off. Still worth a real blend, kept to a phrase
  *    so the weak dimension is not exposed for long.
  *  - **Acceptable** — two dimensions are off, or the data is thin. Short blend:
  *    enough to avoid a hard edge, not enough to sound like a mistake.
- *  - **Poor** — do not overlap. Get out cleanly and start the next track fresh.
+ *  - **Poor** — do not overlap, but this is still a transition worth making
+ *    well: a clean, phrase-timed switch between two tracks that simply do not
+ *    beatmatch is a normal DJ move, not a failure.
+ *  - **Very poor** — nothing about the pair lines up. Fade out, fade in, and do
+ *    not expose either track underneath the other.
+ *
+ * Note what a band is *not*: a judgement about whether two tracks belong
+ * together. It measures how much they can be overlapped. Contrast is a
+ * legitimate move, and `musicalConfidence` on the report is what says whether
+ * the chosen approach will actually sound good.
  */
 
-export type ScoreBand = "perfect" | "excellent" | "good" | "acceptable" | "poor";
+export type ScoreBand =
+  | "perfect"
+  | "excellent"
+  | "good"
+  | "acceptable"
+  | "poor"
+  | "very-poor";
 
 export interface BandInfo {
   band: ScoreBand;
@@ -41,7 +58,7 @@ export const BANDS: BandInfo[] = [
     min: 96,
     windowUsage: 1,
     allowsOverlap: true,
-    description: "beatmatched and harmonically locked — use the whole runway",
+    description: "tempos and keys already agree — use the whole runway",
   },
   {
     band: "excellent",
@@ -70,10 +87,18 @@ export const BANDS: BandInfo[] = [
   {
     band: "poor",
     label: "POOR",
-    min: 0,
+    min: 45,
     windowUsage: 0.35,
     allowsOverlap: false,
-    description: "do not overlap — switch cleanly instead",
+    description: "a safe, deliberate switch rather than a blend",
+  },
+  {
+    band: "very-poor",
+    label: "VERY POOR",
+    min: 0,
+    windowUsage: 0.2,
+    allowsOverlap: false,
+    description: "no overlap at all — fade out, fade in",
   },
 ];
 

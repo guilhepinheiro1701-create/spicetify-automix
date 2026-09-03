@@ -7,17 +7,22 @@
  * plainly which capabilities this client actually has.
  */
 
-import { badge, el, facts, meter, section, selectRow, sliderRow, toggleRow } from "./components.js";
+import { badge, el, meter, section, selectRow, sliderRow, toggleRow } from "./components.js";
 import { injectStyles } from "./styles.js";
 import { STYLE_PROFILES } from "../config/styles.js";
-import { camelotToString, toCamelot } from "../music/camelot.js";
-import { allCapabilities, statusIcon, type CapabilitySet } from "../platform/capabilities.js";
-import { describeStructure } from "../analysis/sections.js";
+import {
+  allCapabilities,
+  explainUnavailable,
+  statusIcon,
+  type CapabilitySet,
+} from "../platform/capabilities.js";
+import { renderExplainer } from "./explainer.js";
+import { INTENT_PROFILES } from "../config/intent.js";
+import type { DjIntent } from "../config/intent.js";
 import type { SetlistReport } from "../queue/setlist.js";
 import { DEFAULT_SETTINGS, type Settings } from "../config/defaults.js";
 import type { SettingsStore } from "../config/settings.js";
 import type { SmartDj } from "../runtime/smartDj.js";
-import type { TrackAnalysis } from "../core/types.js";
 import type { MusicAnalyzer } from "../analysis/analyzer.js";
 
 declare const Spicetify: any;
@@ -33,137 +38,41 @@ const pct = (v: number): string => `${Math.round(v * 100)}%`;
 const bandTone = (band: string): "ok" | "warn" | "bad" =>
   band === "PERFECT" || band === "EXCELLENT" ? "ok" : band === "POOR" ? "bad" : "warn";
 
-function trackSummary(analysis: TrackAnalysis | null): string {
-  if (!analysis) return "not analysed";
-  const bits: string[] = [];
-  bits.push(analysis.tempo ? `${analysis.tempo.toFixed(0)} BPM` : "BPM ?");
-  const cam = analysis.key !== undefined && analysis.mode !== undefined
-    ? toCamelot(analysis.key, analysis.mode)
-    : null;
-  bits.push(cam ? camelotToString(cam) : "key ?");
-  bits.push(analysis.energy !== undefined ? `E ${analysis.energy.toFixed(2)}` : "E ?");
-  return bits.join(" · ");
-}
-
 function statusSection(dj: SmartDj, analyzer: MusicAnalyzer): HTMLElement {
   const plan = dj.getPlan();
   const status = dj.getStatus();
 
   if (!plan || !plan.to) {
     return section(
-      "Current transition",
+      "This transition",
       el("div", { class: "sdj__hint" }, "Nothing queued to mix into yet."),
     );
   }
 
   const fromAnalysis = analyzer.peek(plan.from.uri);
   const toAnalysis = analyzer.peek(plan.to.uri);
-  const c = plan.compatibility;
 
-  const pair = el(
-    "div",
-    { class: "sdj__pair" },
+  const children: Node[] = [renderExplainer(plan, fromAnalysis, toAnalysis)];
+
+  children.push(
     el(
       "div",
-      { class: "sdj__track" },
-      el("b", {}, plan.from.name),
-      el("span", {}, trackSummary(fromAnalysis)),
-    ),
-    el("div", { class: "sdj__arrow" }, "→"),
-    el(
-      "div",
-      { class: "sdj__track" },
-      el("b", {}, plan.to.name),
-      el("span", {}, trackSummary(toAnalysis)),
-    ),
-  );
-
-  const tone = bandTone(plan.band);
-  const header = el(
-    "div",
-    { class: "sdj__row" },
-    el("span", { class: "sdj__label" }, "Compatibility"),
-    el(
-      "span",
-      { class: "sdj__value" },
-      `${pct(c.overall)} `,
-      badge(plan.band, tone),
-    ),
-  );
-
-  const breakdown = facts([
-    ["Tempo", `${pct(c.tempo.score)} — ${c.tempo.detail}`],
-    ["Key", `${pct(c.key.score)} — ${c.key.detail}`],
-    ["Energy", `${pct(c.energy.score)} — ${c.energy.detail}`],
-    ["Phrase", `${pct(c.phrase.score)} — ${c.phrase.detail}`],
-    ["Loudness", `${pct(c.loudness.score)} — ${c.loudness.detail}`],
-    ["Confidence", pct(c.confidence)],
-  ]);
-
-  const planFacts = facts([
-    [
-      "Strategy",
+      { class: "sdj__row", style: "margin-top:12px" },
+      el("span", { class: "sdj__label" }, "Status"),
       el(
         "span",
-        {},
-        plan.strategy.replace(/-/g, " ").toUpperCase(),
-        " ",
-        badge(plan.executor.replace(/-/g, " "), tone),
+        { class: "sdj__value" },
+        status.phase + (status.etaSec !== null ? ` · in ${status.etaSec.toFixed(1)}s` : ""),
       ),
-    ],
-    ["Technique", plan.technique.replace(/-/g, " ")],
-    [
-      "Length",
-      plan.durationBeats
-        ? `${plan.durationSec.toFixed(1)}s · ${plan.durationBeats} beats`
-        : `${plan.durationSec.toFixed(1)}s`,
-    ],
-    [
-      "Runway",
-      plan.windowLimitedBy === "unknown"
-        ? "unknown — using a tempo-derived length"
-        : `${plan.mixableWindowSec.toFixed(1)}s, limited by the ${plan.windowLimitedBy}`,
-    ],
-    [
-      "Switch at",
-      plan.leadInSec > 0
-        ? `${plan.startPointSec.toFixed(1)}s (fade starts ${plan.leadInSec.toFixed(1)}s earlier)`
-        : `${plan.startPointSec.toFixed(1)}s`,
-    ],
-    [
-      "Alignment",
-      [
-        plan.phraseAlignment ? "phrase" : null,
-        plan.beatAlignment
-          ? `downbeat${plan.phaseOffsetSec > 0.001 ? ` (−${(plan.phaseOffsetSec * 1000).toFixed(0)} ms)` : ""}`
-          : null,
-      ]
-        .filter(Boolean)
-        .join(" + ") || "none",
-    ],
-    [
-      "Structure",
-      `${fromAnalysis?.structure ? describeStructure(fromAnalysis.structure) : "A unknown"} → ${
-        toAnalysis?.structure ? describeStructure(toAnalysis.structure) : "B unknown"
-      }`,
-    ],
-    ["Status", status.phase + (status.etaSec !== null ? ` · in ${status.etaSec.toFixed(1)}s` : "")],
-  ]);
-
-  const progress = meter(status.phase === "transitioning" ? status.progress : 0);
+    ),
+    meter(status.phase === "transitioning" ? status.progress : 0),
+  );
 
   const why = el("ul", { class: "sdj__list" });
   for (const r of plan.rationale) why.append(el("li", {}, r));
+  children.push(why);
 
-  const children: Node[] = [pair, header, meter(c.overall), breakdown, planFacts, progress, why];
-
-  if (plan.caveats.length > 0) {
-    const caveats = el("ul", { class: "sdj__list sdj__caveats" });
-    for (const c2 of plan.caveats) caveats.append(el("li", {}, c2));
-    children.push(caveats);
-  }
-
-  return section("Current transition", ...children);
+  return section("This transition", ...children);
 }
 
 function setlistSection(report: SetlistReport | null): HTMLElement {
@@ -216,16 +125,75 @@ function setlistSection(report: SetlistReport | null): HTMLElement {
   return section("Coming up", ...children);
 }
 
+function statTile(value: string, label: string): HTMLElement {
+  return el("div", { class: "sdj__stat" }, el("b", {}, value), el("span", {}, label));
+}
+
+function diagnosticsSection(dj: SmartDj): HTMLElement {
+  const d = dj.diagnostics.snapshot();
+  const stats = el(
+    "div",
+    { class: "sdj__stats" },
+    statTile(String(d.transitionsAttempted), "attempted"),
+    statTile(String(d.completed), "completed"),
+    statTile(`${Math.round(d.averageScore * 100)}%`, "avg score"),
+    statTile(`${Math.round(d.averageConfidence * 100)}%`, "avg confidence"),
+    statTile(String(d.degraded), "degraded"),
+    statTile(String(d.aborted + d.failed), "interrupted"),
+    statTile(String(d.poorTransitions), "poor pairs"),
+    statTile(String(d.queueFailures), "queue failures"),
+  );
+
+  const children: Node[] = [
+    el(
+      "div",
+      { class: "sdj__hint" },
+      `${(d.uptimeMs / 60000).toFixed(0)} min of listening · ` +
+        `${d.crossfadeTransitions} overlap, ${d.fadeTransitions} fade, ${d.passiveTransitions} passive. ` +
+        "Everything here stays on this machine.",
+    ),
+    stats,
+  ];
+
+  const bands = Object.entries(d.bandCounts);
+  if (bands.length > 0) {
+    children.push(
+      el(
+        "div",
+        { class: "sdj__hint" },
+        `Bands: ${bands.map(([b, n]) => `${b} ${n}`).join(" · ")}`,
+      ),
+    );
+  }
+
+  const logText = dj.diagnostics.formatLog();
+  children.push(el("div", { class: "sdj__log" }, logText));
+
+  const copy = el("button", { class: "sdj__btn" }, "Copy session log");
+  copy.addEventListener("click", () => {
+    try {
+      void navigator.clipboard?.writeText(logText);
+    } catch {
+      /* clipboard unavailable — the log is on screen anyway */
+    }
+  });
+  const reset = el("button", { class: "sdj__btn" }, "Reset");
+  reset.addEventListener("click", () => dj.diagnostics.reset());
+  children.push(el("div", { class: "sdj__row", style: "margin-top:10px" }, copy, reset));
+
+  return section("Diagnostics", ...children);
+}
+
 function capabilitySection(caps: CapabilitySet | null): HTMLElement {
   if (!caps) {
-    return section("What this client can do", el("div", { class: "sdj__hint" }, "Probing…"));
+    return section("Compatibility", el("div", { class: "sdj__hint" }, "Probing…"));
   }
 
   const list = el("div", { class: "sdj__facts" });
   for (const cap of allCapabilities(caps)) {
     list.append(
       el("dt", {}, `${statusIcon(cap.status)} ${cap.label}`),
-      el("dd", { class: "sdj__hint" }, cap.detail),
+      el("dd", { class: "sdj__hint" }, explainUnavailable(cap)),
     );
   }
 
@@ -237,10 +205,24 @@ function capabilitySection(caps: CapabilitySet | null): HTMLElement {
         ? "Fade mode — no audio overlap on this client, switches are shaped with volume instead"
         : "Passive — Smart DJ cannot affect playback here";
 
+  const versions = [
+    caps.spicetifyVersion ? `Spicetify ${caps.spicetifyVersion}` : null,
+    caps.spotifyVersion ? `Spotify ${caps.spotifyVersion}` : null,
+    caps.platform,
+    `account ${caps.productTier}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   return section(
-    "What this client can do",
-    el("div", { class: "sdj__row" }, el("span", { class: "sdj__label" }, tierText), badge(caps.tier, tierTone)),
-    el("div", { class: "sdj__hint" }, `Account: ${caps.productTier}`),
+    "Compatibility",
+    el(
+      "div",
+      { class: "sdj__row" },
+      el("span", { class: "sdj__label" }, tierText),
+      badge(caps.tier, tierTone),
+    ),
+    el("div", { class: "sdj__hint" }, versions),
     el("div", { style: "height:8px" }),
     list,
   );
@@ -265,6 +247,16 @@ export function buildPanel(deps: PanelDeps): HTMLElement {
         settings.update({ enabled: v });
       }),
       selectRow(
+        "DJ intent",
+        INTENT_PROFILES[s.intent]?.description ?? "",
+        Object.values(INTENT_PROFILES).map((p) => ({ value: p.id, label: p.label })),
+        s.intent,
+        (v) => {
+          settings.update({ intent: v as DjIntent });
+          rerender();
+        },
+      ),
+      selectRow(
         "Style",
         STYLE_PROFILES[s.style]?.description ?? "",
         Object.values(STYLE_PROFILES).map((p) => ({ value: p.id, label: p.label })),
@@ -287,7 +279,7 @@ export function buildPanel(deps: PanelDeps): HTMLElement {
 
   // ── Techniques ────────────────────────────────────────────────────────────
   const caps = dj.getCapabilities();
-  const noOverlap = caps?.nativeCrossfade.status !== "available";
+  const noOverlap = !caps?.flags.crossfade;
 
   root.append(
     section(
@@ -308,12 +300,12 @@ export function buildPanel(deps: PanelDeps): HTMLElement {
         (v) => settings.update({ phraseMatching: v }),
       ),
       toggleRow(
-        "Smart EQ",
+        "Fade shaping",
         noOverlap
-          ? "Approximated with broadband volume shaping — no per-band control exists."
-          : "Planned, but not applicable during a native crossfade. Kept for the fade path.",
-        s.smartEq,
-        (v) => settings.update({ smartEq: v }),
+          ? "Front-loads the fade so the outgoing track clears out sooner — the audible half of a bass swap. Not an equaliser: no per-band control exists here."
+          : "Only affects the fade path. During a native crossfade Spotify owns both streams and nothing can shape them.",
+        s.fadeShaping,
+        (v) => settings.update({ fadeShaping: v }),
       ),
       toggleRow("Energy matching", "Prefer a gentle lift over a jarring jump.", s.energyMatching, (v) =>
         settings.update({ energyMatching: v }),
@@ -335,6 +327,9 @@ export function buildPanel(deps: PanelDeps): HTMLElement {
 
   // ── Capabilities ──────────────────────────────────────────────────────────
   root.append(capabilitySection(caps));
+
+  // ── Diagnostics, when the user has asked to see them ─────────────────────
+  if (s.debugMode) root.append(diagnosticsSection(dj));
 
   // ── Advanced ──────────────────────────────────────────────────────────────
   const advanced = el("details", { class: "sdj__advanced" }, el("summary", {}, "Advanced settings"));

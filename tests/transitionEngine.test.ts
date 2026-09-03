@@ -105,8 +105,10 @@ describe("technique selection", () => {
       to: { tempo: 145, key: 6, mode: 0, energy: 0.9 },
     });
     expect(["fade-cut", "quick-blend"]).toContain(p.technique);
-    expect(p.strategy).toBe("safe");
-    expect(p.band).toBe("POOR");
+    // Either safe or a deliberate contrast cut, depending on whether the
+    // outgoing track offers a structural moment to land the switch on.
+    expect(["safe", "contrast"]).toContain(p.strategy);
+    expect(["POOR", "VERY POOR"]).toContain(p.band);
     // The reason has to name something the listener could act on, not a number.
     expect(p.rationale.join(" ")).toMatch(/do not overlap|tempo|runway/i);
   });

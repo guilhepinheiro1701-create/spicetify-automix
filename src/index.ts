@@ -48,7 +48,7 @@ async function boot(): Promise<void> {
   setLogLevel(settings.get().debugMode ? "debug" : settings.get().logLevel);
 
   const analyzer = new MusicAnalyzer({ storage });
-  const dj = new SmartDj(analyzer, settings);
+  const dj = new SmartDj(analyzer, settings, storage);
 
   try {
     await dj.start();

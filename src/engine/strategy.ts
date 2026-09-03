@@ -24,6 +24,7 @@ import type {
 import type { CapabilitySet } from "../platform/capabilities.js";
 import type { StyleProfile } from "../config/styles.js";
 import { bandFor, type BandInfo } from "./bands.js";
+import { TEMPO_UNMIXABLE_PERCENT } from "../music/tempo.js";
 
 export interface StrategyInput {
   compatibility: CompatibilityReport;
@@ -44,6 +45,11 @@ export interface StrategyInput {
   energyDelta: number;
   /** True when the incoming track is spoken word or a live recording. */
   incomingIsAtypical: boolean;
+  /**
+   * Whether the user's DJ intent permits a deliberate contrast cut instead of
+   * a timid fade when the pair does not fit technically.
+   */
+  allowContrast: boolean;
 }
 
 export interface StrategyResult {
@@ -61,8 +67,7 @@ export interface StrategyResult {
 const LONG_RUNWAY_SEC = 12;
 /** Energy moves smaller than this are not a direction, just noise. */
 const ENERGY_DIRECTION_THRESHOLD = 0.12;
-/** Past this the pair cannot be overlapped: no rate control means two pulses. */
-const UNMIXABLE_TEMPO_DELTA = 12;
+
 
 export function selectStrategy(input: StrategyInput): StrategyResult {
   const rationale: string[] = [];
@@ -84,8 +89,8 @@ export function selectStrategy(input: StrategyInput): StrategyResult {
   }
 
   // ── 2. What can this client physically do? ────────────────────────────────
-  const canOverlap = caps.nativeCrossfade.status === "available";
-  const canFade = caps.volumeAutomation.status !== "unavailable";
+  const canOverlap = caps.flags.crossfade;
+  const canFade = caps.flags.volumeControl;
 
   if (!canOverlap) {
     caveats.push(
@@ -106,13 +111,29 @@ export function selectStrategy(input: StrategyInput): StrategyResult {
   const tempoKnown = c.tempo.confidence > 0;
 
   if (!band.allowsOverlap || c.overall < floor) {
-    rationale.push(
-      `${band.label} (${(c.overall * 100).toFixed(0)}%) — ${band.description}`,
-    );
+    rationale.push(`${band.label} (${(c.overall * 100).toFixed(0)}%) — ${band.description}`);
+
+    // A poor technical fit is not a verdict on the pairing. Two tracks that
+    // cannot be blended can still follow one another well, and a decisive cut
+    // on a phrase line is how a DJ makes that work. We take that route when
+    // there is a structural moment to cut on and the user's intent allows it —
+    // otherwise we retreat to a plain fade.
+    const canCutWell =
+      input.allowContrast &&
+      band.band !== "very-poor" &&
+      Boolean(input.fromStructure?.known) &&
+      (input.fromStructure?.outroRunwaySec ?? 0) > 2;
+
+    if (canCutWell) {
+      rationale.push(
+        "cutting decisively on the outgoing track's own structure rather than smearing two records that do not fit",
+      );
+      return stand("contrast", "fade-cut", canFade ? "volume-fade" : "passive", 0.7);
+    }
     return stand("safe", "fade-cut", canFade ? "volume-fade" : "passive", 0.6);
   }
 
-  if (tempoKnown && absTempoDelta > UNMIXABLE_TEMPO_DELTA) {
+  if (tempoKnown && absTempoDelta > TEMPO_UNMIXABLE_PERCENT) {
     rationale.push(
       `tempos differ by ${absTempoDelta.toFixed(1)}% and playback rate is not controllable — overlapping would produce two competing pulses`,
     );
@@ -175,7 +196,7 @@ export function selectStrategy(input: StrategyInput): StrategyResult {
 
   if (beatLocked && (band.band === "perfect" || band.band === "excellent")) {
     rationale.push(
-      `beat grids on both tracks and only ${absTempoDelta.toFixed(1)}% tempo difference — phase-locking the switch`,
+      `beat grids on both tracks and only ${absTempoDelta.toFixed(1)}% tempo difference — aligning the switch to the grid`,
     );
     return stand("dj", "beat-aligned-blend", executor, 1.1);
   }

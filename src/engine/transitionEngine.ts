@@ -38,11 +38,14 @@ import { classifySections, mixableWindowSec } from "../analysis/sections.js";
 import { scoreCompatibility, type ScoringWeights } from "./scoring.js";
 import { baseBeatsFor, selectStrategy } from "./strategy.js";
 import { bandFor } from "./bands.js";
+import { musicalConfidence } from "./confidence.js";
 import { styleProfile } from "../config/styles.js";
+import { intentProfile } from "../config/intent.js";
 import type { Settings } from "../config/defaults.js";
-import type { CapabilitySet } from "../platform/capabilities.js";
+import { explainUnavailable, type CapabilitySet } from "../platform/capabilities.js";
 import type {
-  EqPlan,
+  ShapingPlan,
+  FeatureVerdict,
   GainPlan,
   TrackAnalysis,
   TrackRef,
@@ -98,16 +101,189 @@ function passthroughPlan(input: TransitionInput, reason: string): TransitionPlan
     phaseOffsetSec: 0,
     mixableWindowSec: 0,
     windowLimitedBy: "unknown",
-    eq: { enabled: false, shaping: "none", approximated: false },
+    shaping: { enabled: false, shaping: "none", approximated: false },
     gain: { trackA: 0, trackB: 0, perTrackSupported: false },
     curve: input.settings.fadeCurve,
     rationale: [reason],
     caveats: [],
+    verdicts: [],
+    musicalConfidence: 0,
+    musicalConfidenceLabel: "n/a",
+    confidenceFactors: [],
   };
 }
 
 /**
- * EQ intent.
+ * Record what became of every feature the engine considered.
+ *
+ * This is the source of truth for the debug panel's "why not?" answers and for
+ * the capability regression tests. A feature that is unavailable must appear
+ * here with the capability layer's own reason — never silently omitted, and
+ * never marked used.
+ */
+function buildVerdicts(input: {
+  caps: CapabilitySet;
+  settings: Settings;
+  overlapping: boolean;
+  beatAlignment: boolean;
+  phraseAlignment: boolean;
+  entryPointSec: number;
+  gainApplied: boolean;
+  hasGrids: boolean;
+}): FeatureVerdict[] {
+  const { caps, settings } = input;
+  const v: FeatureVerdict[] = [];
+  const capReason = (id: Parameters<typeof explainUnavailable>[0]) => explainUnavailable(id);
+
+  v.push(
+    input.overlapping
+      ? {
+          feature: "audio-overlap",
+          used: true,
+          code: "used",
+          detail: "Spotify's own mixer is producing a real overlap",
+        }
+      : {
+          feature: "audio-overlap",
+          used: false,
+          code: "capability-unavailable",
+          detail: capReason(caps.capabilities.crossfade),
+        },
+  );
+
+  v.push({
+    feature: "tempo-adjustment",
+    used: false,
+    code: "capability-unavailable",
+    detail: capReason(caps.capabilities.playbackRate),
+  });
+
+  if (!settings.beatMatching) {
+    v.push({
+      feature: "beat-alignment",
+      used: false,
+      code: "disabled-by-user",
+      detail: "beat alignment is switched off in settings",
+    });
+  } else if (!input.hasGrids) {
+    v.push({
+      feature: "beat-alignment",
+      used: false,
+      code: "data-missing",
+      detail: "no usable beat grid on one or both tracks",
+    });
+  } else {
+    v.push({
+      feature: "beat-alignment",
+      used: input.beatAlignment,
+      code: input.beatAlignment ? "used" : "not-musically-appropriate",
+      detail: input.beatAlignment
+        ? "the switch is pulled early by the incoming track's grid phase so the downbeats coincide"
+        : "the tempos are too far apart for the pulses to stay together after the downbeat",
+    });
+  }
+
+  v.push(
+    !settings.phraseMatching
+      ? {
+          feature: "phrase-alignment",
+          used: false,
+          code: "disabled-by-user",
+          detail: "phrase matching is switched off in settings",
+        }
+      : {
+          feature: "phrase-alignment",
+          used: input.phraseAlignment,
+          code: input.phraseAlignment ? "used" : "data-missing",
+          detail: input.phraseAlignment
+            ? "the switch lands on a phrase boundary"
+            : "no confident phrase grid to land on",
+        },
+  );
+
+  // Fade shaping is the closest thing to a bass swap available here, and it is
+  // only possible on the fade path.
+  if (!settings.fadeShaping) {
+    v.push({
+      feature: "fade-shaping",
+      used: false,
+      code: "disabled-by-user",
+      detail: "fade shaping is switched off in settings",
+    });
+  } else if (input.overlapping) {
+    v.push({
+      feature: "fade-shaping",
+      used: false,
+      code: "capability-unavailable",
+      detail:
+        "during a native crossfade Spotify owns both streams; " + capReason(caps.capabilities.dsp),
+    });
+  } else {
+    v.push({
+      feature: "fade-shaping",
+      used: true,
+      code: "used",
+      detail:
+        "the fade is front-loaded so the outgoing track clears out sooner — broadband, not per-band",
+    });
+  }
+
+  if (!settings.skipDeadIntro) {
+    v.push({
+      feature: "intro-skip",
+      used: false,
+      code: "disabled-by-user",
+      detail: "intro skipping is switched off in settings",
+    });
+  } else if (input.overlapping) {
+    v.push({
+      feature: "intro-skip",
+      used: false,
+      code: "capability-unavailable",
+      detail: "seeking mid-overlap is not possible; intro skipping works on the fade path only",
+    });
+  } else {
+    v.push({
+      feature: "intro-skip",
+      used: input.entryPointSec > 0.5,
+      code: input.entryPointSec > 0.5 ? "used" : "not-musically-appropriate",
+      detail:
+        input.entryPointSec > 0.5
+          ? `starting the incoming track at ${input.entryPointSec.toFixed(1)}s`
+          : "the incoming track has no measurably dead opening to skip",
+    });
+  }
+
+  v.push(
+    !settings.loudnessNormalization
+      ? {
+          feature: "loudness-match",
+          used: false,
+          code: "disabled-by-user",
+          detail: "loudness matching is switched off in settings",
+        }
+      : input.overlapping
+        ? {
+            feature: "loudness-match",
+            used: false,
+            code: "capability-unavailable",
+            detail: capReason(caps.capabilities.perTrackGain),
+          }
+        : {
+            feature: "loudness-match",
+            used: input.gainApplied,
+            code: input.gainApplied ? "used" : "not-musically-appropriate",
+            detail: input.gainApplied
+              ? "the incoming track is attenuated to match the outgoing level"
+              : "the two tracks are already at a comparable level",
+          },
+  );
+
+  return v;
+}
+
+/**
+ * Fade-shaping intent.
  *
  * A DJ swaps the bass: the outgoing track's low end comes out as the incoming
  * one's comes in, so two basslines never occupy the same space. There is no
@@ -118,7 +294,7 @@ function passthroughPlan(input: TransitionInput, reason: string): TransitionPlan
  *
  * Deliberately no dB figures: numbers nothing applies are theatre.
  */
-function planEq(enabled: boolean, overlapping: boolean): EqPlan {
+function planShaping(enabled: boolean, overlapping: boolean): ShapingPlan {
   if (!enabled) return { enabled: false, shaping: "none", approximated: false };
   return {
     enabled: true,
@@ -171,6 +347,10 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
   }
 
   const profile = styleProfile(settings.style);
+  const intent = intentProfile(settings.intent);
+  // Explicit weights from the caller win; otherwise the user's intent decides
+  // what the engine is optimising for.
+  const weights = input.weights ?? intent.weights;
   const gridA = fromAnalysis.grid ?? null;
   const gridB = toAnalysis.grid ?? null;
   const trackDurationSec = fromAnalysis.durationMs / 1000 || fromTrack.durationMs / 1000;
@@ -210,7 +390,7 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
     exitTimeSec: provisionalExit.time,
     durationSec: provisionalSec,
     toggles,
-    ...(input.weights ? { weights: input.weights } : {}),
+    weights,
   });
 
   // ── Strategy: character and mechanism ─────────────────────────────────────
@@ -229,13 +409,14 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
     hasBeatGrids,
     sameAlbumConsecutive,
     preserveAlbumGapless: settings.preserveAlbumGapless,
-    minCompatibilityForBlend: settings.minCompatibilityForBlend,
+    minCompatibilityForBlend: Math.max(settings.minCompatibilityForBlend, intent.blendFloor),
     mixableWindowSec: window.windowSec,
     windowLimitedBy: window.limitedBy,
     fromStructure,
     toStructure,
     energyDelta,
     incomingIsAtypical: isAtypical(toAnalysis),
+    allowContrast: intent.allowContrast,
   });
 
   if (strategy.technique === "gapless-passthrough" || strategy.executor === "passive") {
@@ -269,7 +450,8 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
     const beatsSec = bpmA
       ? beatsToSeconds(beats, bpmA)
       : (profile.minSec + profile.maxSec) / 2;
-    desiredSec = beatsSec * intensityFactor * strategy.lengthFactor * profile.lengthBias;
+    desiredSec =
+      beatsSec * intensityFactor * strategy.lengthFactor * profile.lengthBias * intent.lengthBias;
   } else {
     desiredSec = ((settings.minDurationSec + settings.maxDurationSec) / 2) * profile.lengthBias;
   }
@@ -325,7 +507,7 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
   // grid origin says, so the switch has to be fired that much earlier.
   let phaseOffsetSec = 0;
   let beatAlignment = false;
-  if (settings.beatMatching && gridA && capabilities.preciseTiming.status === "available") {
+  if (settings.beatMatching && gridA && capabilities.flags.preciseTiming) {
     const onGrid = isOnPhrase(gridA, startPointSec, 0.05)
       ? startPointSec
       : nearestDownbeat(gridA, startPointSec);
@@ -366,9 +548,27 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
     exitTimeSec: startPointSec,
     durationSec,
     toggles,
-    ...(input.weights ? { weights: input.weights } : {}),
+    weights,
   });
   const finalBand = bandFor(compatibility.overall);
+
+  const gain = planGain(
+    settings.loudnessNormalization,
+    fromAnalysis,
+    toAnalysis,
+    capabilities.flags.perTrackGain,
+  );
+
+  const confidence = musicalConfidence({
+    compatibility,
+    band: finalBand,
+    strategy: strategy.strategy,
+    mixableWindowSec: window.windowSec,
+    durationSec,
+    phraseAligned: phraseAlignment,
+    fromStructure,
+    toStructure,
+  });
 
   // ── Explain it ────────────────────────────────────────────────────────────
   const rationale = [...strategy.rationale];
@@ -415,7 +615,7 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
       "downbeat alignment is computed from the beat grids; the residual error is however long this client takes to change track, which cannot be measured from inside it — tune it with Advanced → switch latency",
     );
   }
-  if (settings.smartEq) {
+  if (settings.fadeShaping) {
     caveats.push(
       overlapping
         ? "no EQ shaping is possible during a native crossfade: Spotify owns both streams and exposes no per-band control"
@@ -455,15 +655,23 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
     phaseOffsetSec: round(phaseOffsetSec, 4),
     mixableWindowSec: round(window.windowSec, 1),
     windowLimitedBy: window.limitedBy,
-    eq: planEq(settings.smartEq, overlapping),
-    gain: planGain(
-      settings.loudnessNormalization,
-      fromAnalysis,
-      toAnalysis,
-      capabilities.perTrackGain.status === "available",
-    ),
+    shaping: planShaping(settings.fadeShaping, overlapping),
+    gain,
     curve: settings.style === "custom" ? settings.fadeCurve : profile.curve,
     rationale,
     caveats,
+    verdicts: buildVerdicts({
+      caps: capabilities,
+      settings,
+      overlapping,
+      beatAlignment,
+      phraseAlignment,
+      entryPointSec: overlapping ? 0 : entryCue.time,
+      gainApplied: !overlapping && settings.loudnessNormalization && Math.abs(gain.trackB) > 0.5,
+      hasGrids: hasBeatGrids,
+    }),
+    musicalConfidence: round(confidence.score, 3),
+    musicalConfidenceLabel: confidence.label,
+    confidenceFactors: confidence.factors,
   };
 }

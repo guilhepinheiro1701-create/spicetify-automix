@@ -220,6 +220,7 @@ export type TransitionStrategy =
   | "energy-rise"
   | "energy-drop"
   | "harmonic"
+  | "contrast" // deliberately incompatible, cut decisively on a phrase line
   | "safe";
 
 /**
@@ -229,7 +230,7 @@ export type TransitionStrategy =
  */
 export type TransitionTechnique =
   | "gapless-passthrough" // do nothing: consecutive album tracks, preserve artist intent
-  | "beat-aligned-blend" // overlap, phase-locked downbeats, long
+  | "beat-aligned-blend" // overlap, downbeats aligned within the client's switch latency
   | "phrase-blend" // overlap starting on a phrase boundary
   | "quick-blend" // short overlap, incompatible-ish pair
   | "fade-cut" // no overlap available: fade A out, cut, fade B in
@@ -241,7 +242,11 @@ export type ExecutorKind =
   | "volume-fade" // no overlap: our own volume automation around the skip
   | "passive"; // we do not touch playback at all
 
-export interface EqPlan {
+/**
+ * What gesture the transition wanted, not what it filtered — there is no
+ * equaliser anywhere in this environment. Named for what it is.
+ */
+export interface ShapingPlan {
   enabled: boolean;
   /**
    * Which gesture was wanted, not a set of gains — there is no per-band control
@@ -320,7 +325,7 @@ export interface TransitionPlan {
   /** Which side of the pair capped that window. */
   windowLimitedBy: "outro" | "intro" | "both" | "unknown";
 
-  eq: EqPlan;
+  shaping: ShapingPlan;
   gain: GainPlan;
 
   /** Shape of the outgoing/incoming volume ramps. */
@@ -330,9 +335,50 @@ export interface TransitionPlan {
   rationale: string[];
   /** Anything the user should know we could not do. */
   caveats: string[];
+  /** Structured record of every feature considered, and why. */
+  verdicts: FeatureVerdict[];
+  /**
+   * How confident we are that this transition, as planned, will sound good —
+   * a different question from how technically compatible the two tracks are.
+   */
+  musicalConfidence: number;
+  musicalConfidenceLabel: string;
+  confidenceFactors: string[];
 }
 
 export type FadeCurve = "equal-power" | "linear" | "exponential" | "s-curve";
+
+/** A feature the engine considered, and what became of it. */
+export type PlanFeature =
+  | "audio-overlap"
+  | "beat-alignment"
+  | "phrase-alignment"
+  | "fade-shaping"
+  | "intro-skip"
+  | "loudness-match"
+  | "tempo-adjustment";
+
+export type VerdictCode =
+  | "used"
+  | "capability-unavailable"
+  | "disabled-by-user"
+  | "data-missing"
+  | "not-musically-appropriate";
+
+/**
+ * Why a feature was or was not used on this transition.
+ *
+ * This exists so the debug panel can answer "why wasn't EQ used?" with a real
+ * reason, and so a regression test can assert that an unavailable capability
+ * was never claimed. Prose caveats are derived from these, not the other way
+ * round.
+ */
+export interface FeatureVerdict {
+  feature: PlanFeature;
+  used: boolean;
+  code: VerdictCode;
+  detail: string;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Runtime status

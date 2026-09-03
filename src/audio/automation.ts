@@ -22,6 +22,9 @@ const log = createLogger("automation");
 /** Above this difference between expected and actual volume, assume a human moved it. */
 const USER_OVERRIDE_EPSILON = 0.04;
 const TICK_MS = 25;
+/** Backoff and cap for putting the volume back when the client is refusing writes. */
+const RESTORE_RETRY_MS = 150;
+const RESTORE_MAX_ATTEMPTS = 6;
 
 export interface VolumeIO {
   get(): number;
@@ -44,6 +47,7 @@ export type RampOutcome = "completed" | "cancelled" | "user-override" | "failed"
  */
 export class VolumeAutomation {
   private timer: ReturnType<typeof setInterval> | null = null;
+  private restoreTimer: ReturnType<typeof setTimeout> | null = null;
   private baseline: number | null = null;
   private expected: number | null = null;
   private resolveCurrent: ((outcome: RampOutcome) => void) | null = null;
@@ -136,19 +140,64 @@ export class VolumeAutomation {
     this.restore();
   }
 
+  /**
+   * Put the volume back where the user had it.
+   *
+   * The baseline is only forgotten once the write actually succeeds. If the
+   * client's volume API is momentarily unavailable — which is exactly when a
+   * transition is most likely to be abandoned — discarding it here would leave
+   * the listener at whatever level the fade had reached, with nothing left to
+   * restore from when the client recovers.
+   */
   restore(): void {
     if (this.baseline === null) return;
     const target = this.baseline;
-    this.baseline = null;
-    this.expected = null;
-    if (!this.io.set(target)) {
-      log.error("could not restore volume — retrying once");
-      setTimeout(() => this.io.set(target), 120);
+
+    if (this.io.set(target)) {
+      this.baseline = null;
+      this.expected = null;
+      return;
     }
+
+    log.warn("could not restore volume — retrying while the client recovers");
+    this.scheduleRestoreRetry(target, 1);
+  }
+
+  private scheduleRestoreRetry(target: number, attempt: number): void {
+    if (attempt > RESTORE_MAX_ATTEMPTS) {
+      // Stop the retry loop, but deliberately keep the baseline. We have not
+      // put the volume back yet, and forgetting where it belongs is how a
+      // listener ends up stuck at half level. The next explicit restore — on
+      // abort, on teardown, or when the next transition finishes — tries again.
+      log.error(
+        "the client is still rejecting volume writes; holding the original level for a later attempt",
+      );
+      return;
+    }
+    if (this.restoreTimer !== null) clearTimeout(this.restoreTimer);
+    this.restoreTimer = setTimeout(
+      () => {
+        this.restoreTimer = null;
+        // A newer ramp may have taken over in the meantime; do not fight it.
+        if (this.baseline === null || this.timer !== null) return;
+        if (this.io.set(target)) {
+          this.baseline = null;
+          this.expected = null;
+          log.info("volume restored once the client recovered");
+          return;
+        }
+        this.scheduleRestoreRetry(target, attempt + 1);
+      },
+      RESTORE_RETRY_MS * attempt,
+    );
   }
 
   /** Forget the baseline without touching the volume. */
   releaseBaseline(): void {
+    if (this.restoreTimer !== null) {
+      clearTimeout(this.restoreTimer);
+      this.restoreTimer = null;
+    }
     this.baseline = null;
     this.expected = null;
   }

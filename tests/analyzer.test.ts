@@ -246,3 +246,105 @@ describe("SetlistPlanner", () => {
     }
   });
 });
+
+describe("sequence analysis", () => {
+  it("detects an energy cliff, a BPM cliff and a key clash", async () => {
+    const { detectIssues } = await import("../src/queue/setlist.js");
+    const a = track({ uri: "spotify:track:i0", name: "Calm" });
+    const b = track({ uri: "spotify:track:i1", name: "Banger" });
+    const analyses = [
+      analysis({ tempo: 82, key: 0, mode: 1, energy: 0.2 }),
+      analysis({ tempo: 140, key: 6, mode: 0, energy: 0.95 }),
+    ];
+    const links = [
+      {
+        from: a,
+        to: b,
+        score: 0.2,
+        band: "very-poor" as const,
+        index: 0,
+        tempoDetail: "",
+        keyDetail: "",
+        energyDetail: "",
+      },
+    ];
+    const issues = detectIssues([a, b], analyses, links);
+    const kinds = issues.map((i) => i.kind);
+    expect(kinds).toContain("energy-cliff");
+    expect(kinds).toContain("bpm-cliff");
+    expect(kinds).toContain("key-clash");
+    expect(kinds).toContain("weak-transition");
+    // Sorted worst first.
+    expect(issues[0]!.severity).toBeGreaterThanOrEqual(issues[issues.length - 1]!.severity);
+  });
+
+  it("flags a run of tracks by the same artist", async () => {
+    const { detectIssues } = await import("../src/queue/setlist.js");
+    const chain = [0, 1, 2, 3].map((i) =>
+      track({ uri: `spotify:track:r${i}`, artists: ["Same Artist"] }),
+    );
+    const issues = detectIssues(chain, [null, null, null, null], []);
+    expect(issues.some((i) => i.kind === "repeated-style")).toBe(true);
+  });
+
+  it("optimizeSequence proposes a better order without touching context tracks", async () => {
+    const { optimizeSequence } = await import("../src/queue/setlist.js");
+    const _now = track({ uri: "spotify:track:o0" });
+    const clash = track({ uri: "spotify:track:o1", provider: "queue" });
+    const fits = track({ uri: "spotify:track:o2", provider: "queue" });
+
+    const nowA = analysis({ tempo: 128, key: 9, mode: 0, energy: 0.8 });
+    const clashA = analysis({ tempo: 82, key: 6, mode: 1, energy: 0.2 });
+    const fitsA = analysis({ tempo: 128, key: 9, mode: 0, energy: 0.82 });
+
+    const plan = optimizeSequence(nowA, [clash, fits], [clashA, fitsA]);
+    expect(plan.applicable).toBe(true);
+    expect(plan.proposed[0]!.uri).toBe(fits.uri);
+    expect(plan.proposedScore).toBeGreaterThan(plan.currentScore);
+    expect(plan.moves.length).toBeGreaterThan(0);
+  });
+
+  it("optimizeSequence refuses when nothing is movable", async () => {
+    const { optimizeSequence } = await import("../src/queue/setlist.js");
+    const _now = track({ uri: "spotify:track:c0" });
+    const a = track({ uri: "spotify:track:c1", provider: "context" });
+    const b = track({ uri: "spotify:track:c2", provider: "context" });
+    const plan = optimizeSequence(analysis(), [a, b], [analysis(), analysis()]);
+    expect(plan.applicable).toBe(false);
+    expect(plan.moves).toEqual([]);
+    expect(plan.note).toMatch(/playing context/i);
+    // And it must never silently change the order.
+    expect(plan.proposed.map((t) => t.uri)).toEqual([a.uri, b.uri]);
+  });
+});
+
+describe("energy trajectory", () => {
+  it("reads a building set and rewards continuing it", async () => {
+    const { readTrajectory, fitsTrajectory } = await import("../src/queue/trajectory.js");
+    const t = readTrajectory([0.5, 0.58, 0.66, 0.72]);
+    expect(t.shape).toBe("building");
+    expect(t.slope).toBeGreaterThan(0);
+    expect(fitsTrajectory(t, 0.8).score).toBeGreaterThan(0.8);
+    expect(fitsTrajectory(t, 0.45).score).toBeLessThan(0.5);
+  });
+
+  it("reads a peak and prefers a release over another push", async () => {
+    const { readTrajectory, fitsTrajectory } = await import("../src/queue/trajectory.js");
+    const t = readTrajectory([0.7, 0.8, 0.88, 0.92]);
+    expect(t.shape).toBe("peaking");
+    expect(fitsTrajectory(t, 0.75).score).toBeGreaterThan(fitsTrajectory(t, 0.99).score);
+  });
+
+  it("reads a comedown and an erratic run", async () => {
+    const { readTrajectory } = await import("../src/queue/trajectory.js");
+    expect(readTrajectory([0.9, 0.8, 0.7, 0.6]).shape).toBe("releasing");
+    expect(readTrajectory([0.2, 0.9, 0.25, 0.85, 0.3]).shape).toBe("erratic");
+  });
+
+  it("is neutral with too little data", async () => {
+    const { readTrajectory, fitsTrajectory } = await import("../src/queue/trajectory.js");
+    const t = readTrajectory([0.5]);
+    expect(t.window).toHaveLength(1);
+    expect(fitsTrajectory(t, 0.9).score).toBe(0.5);
+  });
+});

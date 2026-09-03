@@ -47,9 +47,9 @@ For each transition it decides, from the music:
   is one
 - **whether to refuse** — two tracks that do not fit get a clean switch, not a
   smeared crossfade
-- **which of eight strategies fits** — SMOOTH, DJ, FAST, LONG, ENERGY RISE,
-  ENERGY DROP, HARMONIC or SAFE, chosen from the score band, the energy
-  direction and the runway
+- **which of nine strategies fits** — SMOOTH, DJ, FAST, LONG, ENERGY RISE,
+  ENERGY DROP, HARMONIC, CONTRAST or SAFE, chosen from the score band, the
+  energy direction and the runway
 
 Scoring is weighted tempo 30% / key 22% / energy 18% / phrase 15% / loudness 9% /
 style 6%, using DJ practice for every threshold: the Camelot wheel for harmonic
@@ -65,7 +65,14 @@ The score lands in a band that really drives behaviour:
 | **EXCELLENT** | 90–95 | a long mix is safe |
 | **GOOD** | 80–89 | one phrase, no longer |
 | **ACCEPTABLE** | 65–79 | short overlap only |
-| **POOR** | <65 | no overlap — switch cleanly |
+| **POOR** | 45–64 | no overlap — a deliberate, phrase-timed switch |
+| **VERY POOR** | <45 | fade out, fade in |
+
+A low band is **not** a verdict on the pairing. It says how much the two tracks
+can be *overlapped*. Contrast is a normal DJ move, so a second number —
+**musical confidence** — answers the different question of whether the approach
+actually chosen will sound good. A short switch between two incompatible records
+scores high there; a long blend over a mediocre match scores low.
 
 The reasoning is written up in [`docs/ALGORITHM.md`](docs/ALGORITHM.md), and an
 honest audit of what works, what is estimated and what was removed as theatre is
@@ -183,12 +190,25 @@ Open the panel from the **Smart DJ** button in the playbar.
 | Energy matching | on | Prefer a gentle lift over a jarring jump |
 | Loudness normalization | on | Attenuate an incoming track that is much louder |
 | Reorder the queue | **off** | Pull a better-matching track forward when the next transition would be poor. Only moves tracks you queued yourself. |
+| DJ intent | Balanced | Smooth / Balanced / Energetic / Experimental — changes what the engine optimises for, not just its clamps |
 | Switch latency | 0 ms | How long your client takes to change track. Dial in by ear if downbeat alignment sounds early or late. |
 
 **Advanced:** minimum and maximum length, blend floor (the compatibility below
 which the engine refuses to overlap), fade curve, auto mode, dead-intro skipping,
 album-segue preservation, notifications, debug mode, cache management, and the
 optional custom analysis endpoint.
+
+### DJ intent
+
+| Intent | What changes |
+| --- | --- |
+| **Smooth** | Leans hard on tempo and key. Would rather skip a mix than make a rough one. |
+| **Balanced** | The researched default. |
+| **Energetic** | Programmes for the energy arc and continuity. Shorter, more decisive. |
+| **Experimental** | Relaxes the technical constraints and leans on structure, so deliberate contrast cuts become available. |
+
+Intent moves the scoring weights; style shapes how a transition sounds once
+chosen. They are separate on purpose.
 
 ### Styles
 
@@ -200,6 +220,33 @@ optional custom analysis endpoint.
 | **Chill** | Long dissolves for ambient and downtempo. |
 | **Seamless** | Maximum continuity: aggressive intro skipping, no silence. |
 | **Custom** | Your own numbers, from Advanced settings. |
+
+## Measuring whether it is actually better
+
+Tests prove the code is consistent. They cannot prove it sounds good — no audio
+is reachable. So Smart DJ records its own decisions instead.
+
+Turn on **Debug mode** and the panel grows a **Diagnostics** section: how many
+transitions were attempted, how many degraded to a lower tier, the average score
+and confidence, and a full session log of every decision. "Copy session log"
+gives you the lot as text. Listen for an hour, read it back, and judge the
+algorithm on what it chose and why.
+
+Everything stays on your machine. There is no telemetry in this project.
+
+```
+SMART DJ — SESSION LOG
+Planned 34 · attempted 31 · completed 29 · aborted 2 · degraded 0
+Average score 78% · average confidence 81% · poor 4
+
+21:14:02  Midnight City → Instant Crush
+  94% EXCELLENT · confidence 88% (high)
+  strategy long · beat-aligned-blend · 16 beats
+  exit outro → entry intro · runway 18s (outro)
+  phrase matched · downbeat locked
+  components: tempo 97 key 100 energy 91 phrase 86 loudness 98
+  execution: native-crossfade · completed — 7.5s native crossfade
+```
 
 ## Debug mode
 
@@ -289,7 +336,7 @@ Confirm `spicetify config extensions` lists `smart-dj.js`, re-run
 npm run build       # bundle to dist/smart-dj.js
 npm run watch       # rebuild on change
 npm run typecheck   # tsc --noEmit
-npm test            # 239 unit tests
+npm test            # 297 unit tests
 npm run smoke       # boot the built bundle against a stubbed client
 npm run verify      # all of the above
 ```
@@ -310,7 +357,20 @@ untouched while reordering is off.
 EDM→EDM, pop→EDM, ballad→EDM, long-outro→long-intro and the extremes — and it
 prints the engine's verdict for each, so you can see what it thinks and why.
 
-Layout and design decisions: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+### Documentation
+
+| | |
+| --- | --- |
+| [INSTALLATION.md](docs/INSTALLATION.md) | step-by-step, for non-developers |
+| [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | when something is not working |
+| [LIMITATIONS.md](docs/LIMITATIONS.md) | what it cannot do, and why — read this one |
+| [CAPABILITIES.md](docs/CAPABILITIES.md) | the capability layer and auto-degradation |
+| [COMPATIBILITY.md](docs/COMPATIBILITY.md) | which APIs it depends on, and what happens when they change |
+| [ALGORITHM.md](docs/ALGORITHM.md) | every threshold, and where it comes from |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | layout and design decisions |
+| [TESTING.md](docs/TESTING.md) | what is covered, and what tests cannot prove |
+| [AUDIT.md](docs/AUDIT.md) | honest audit: what works, what is estimated, what was removed |
+| [RESEARCH.md](docs/RESEARCH.md) | the original feasibility investigation, with sources |
 
 ## Credits
 

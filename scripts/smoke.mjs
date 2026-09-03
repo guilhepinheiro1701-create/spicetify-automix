@@ -195,8 +195,13 @@ async function scenarioOverlap() {
   const api = await boot();
   const caps = api.dj.getCapabilities();
   check(caps.tier === "dj", `capability tier is "dj" (got "${caps.tier}")`);
-  check(caps.tempoControl.status === "unavailable", "tempo control correctly reported unavailable");
-  check(caps.audioDsp.status === "unavailable", "audio DSP correctly reported unavailable");
+  check(caps.flags.playbackRate === false, "tempo control correctly reported unavailable");
+  check(caps.flags.dsp === false, "audio DSP correctly reported unavailable");
+  check(caps.flags.perTrackGain === false, "per-track gain correctly reported unavailable");
+  check(
+    caps.capabilities.playbackRate.reason === "playback-rate-unavailable",
+    "carries a machine-readable reason for the unavailable capability",
+  );
 
   await api.replan();
   const plan = api.dj.getPlan();
@@ -234,9 +239,26 @@ async function scenarioOverlap() {
   check(typeof plan.strategy === "string" && plan.strategy.length > 0, `strategy is ${plan.strategy}`);
   check(plan.leadInSec === 0, "overlap path needs no lead-in");
   check(
-    plan.eq.shaping === "not-applicable" || !plan.eq.enabled,
+    plan.shaping.shaping === "not-applicable" || !plan.shaping.enabled,
     "does not pretend EQ shaping applies during a native crossfade",
   );
+
+  // Phase 3 behaviour.
+  check(
+    typeof plan.musicalConfidence === "number" && plan.musicalConfidence > 0,
+    `reports musical confidence separately from technical fit (${Math.round(plan.musicalConfidence * 100)}% ${plan.musicalConfidenceLabel})`,
+  );
+  check(plan.verdicts.length >= 6, `records a verdict for every feature (${plan.verdicts.length})`);
+  const overlapVerdict = plan.verdicts.find((v) => v.feature === "audio-overlap");
+  check(overlapVerdict?.used === true, "marks the overlap as actually used");
+  const rateVerdict = plan.verdicts.find((v) => v.feature === "tempo-adjustment");
+  check(
+    rateVerdict?.used === false && rateVerdict?.code === "capability-unavailable",
+    "never claims beatmatching, and says why",
+  );
+  const diag = api.dj.diagnostics.snapshot();
+  check(diag.transitionsPlanned > 0, `diagnostics counted ${diag.transitionsPlanned} planned`);
+  check(api.dj.memory.size() > 0, "remembered the decision for next time");
 
   const setlist = api.dj.getSetlist();
   check(Boolean(setlist) && setlist.links.length > 0, "reports the upcoming chain");

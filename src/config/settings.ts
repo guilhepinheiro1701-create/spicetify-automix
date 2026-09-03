@@ -5,6 +5,8 @@ import { createLogger, setLogLevel, type LogLevel } from "../core/logger.js";
 import { clamp, clamp01 } from "../core/util.js";
 import { DEFAULT_SETTINGS, SETTINGS_STORAGE_KEY, type Settings } from "./defaults.js";
 import { STYLE_PROFILES } from "./styles.js";
+import { INTENT_PROFILES } from "./intent.js";
+import type { DjIntent } from "./intent.js";
 import type { TransitionStyle, FadeCurve } from "../core/types.js";
 
 const log = createLogger("settings");
@@ -26,6 +28,11 @@ export function sanitize(raw: unknown): Settings {
   const num = (v: unknown, fallback: number, lo: number, hi: number): number =>
     typeof v === "number" && Number.isFinite(v) ? clamp(v, lo, hi) : fallback;
 
+  const intent: DjIntent =
+    typeof input.intent === "string" && input.intent in INTENT_PROFILES
+      ? (input.intent as DjIntent)
+      : d.intent;
+
   const style: TransitionStyle =
     typeof input.style === "string" && input.style in STYLE_PROFILES
       ? (input.style as TransitionStyle)
@@ -43,6 +50,7 @@ export function sanitize(raw: unknown): Settings {
 
   return {
     enabled: bool(input.enabled, d.enabled),
+    intent,
     style,
     intensity: clamp01(num(input.intensity, d.intensity, 0, 1)),
     minDurationSec,
@@ -50,7 +58,7 @@ export function sanitize(raw: unknown): Settings {
     beatMatching: bool(input.beatMatching, d.beatMatching),
     harmonicMixing: bool(input.harmonicMixing, d.harmonicMixing),
     phraseMatching: bool(input.phraseMatching, d.phraseMatching),
-    smartEq: bool(input.smartEq, d.smartEq),
+    fadeShaping: bool(input.fadeShaping, d.fadeShaping),
     energyMatching: bool(input.energyMatching, d.energyMatching),
     loudnessNormalization: bool(input.loudnessNormalization, d.loudnessNormalization),
     skipDeadIntro: bool(input.skipDeadIntro, d.skipDeadIntro),

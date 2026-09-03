@@ -185,7 +185,7 @@ export class MusicAnalyzer {
   }
 
   dispose(): void {
-    this.cache.flush();
+    this.cache.dispose();
     this.inflight.clear();
   }
 }

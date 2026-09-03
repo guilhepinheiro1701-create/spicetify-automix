@@ -116,6 +116,35 @@ export const PANEL_STYLES = `
 }
 .sdj__btn:hover { color: var(--sdj-text); border-color: var(--sdj-text); }
 
+/* Explainer */
+.sdj__headline { display: flex; align-items: baseline; gap: 10px; margin: 10px 0 6px; }
+.sdj__headline-score { font-size: 30px; font-weight: 800; letter-spacing: -0.02em; }
+.sdj__checks { list-style: none; margin: 14px 0 0; padding: 0; }
+.sdj__check {
+  display: grid; grid-template-columns: 18px 1fr; gap: 2px 6px;
+  font-size: 13px; padding: 3px 0; align-items: start;
+}
+.sdj__check-icon { font-weight: 700; line-height: 1.4; }
+.sdj__check--yes .sdj__check-icon { color: var(--sdj-accent); }
+.sdj__check--warn .sdj__check-icon { color: #ffc107; }
+.sdj__check--no .sdj__check-icon { color: #ff6b5e; }
+.sdj__check-detail {
+  grid-column: 2; font-size: 11px; color: var(--sdj-subtext); line-height: 1.45;
+}
+
+/* Diagnostics */
+.sdj__stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 12px; }
+.sdj__stat {
+  background: var(--sdj-surface); border-radius: 6px; padding: 8px 10px;
+}
+.sdj__stat b { display: block; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.sdj__stat span { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--sdj-subtext); }
+.sdj__log {
+  max-height: 240px; overflow: auto; background: rgba(0,0,0,.28); border-radius: 6px;
+  padding: 10px 12px; font-family: 'SFMono-Regular', ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10.5px; line-height: 1.55; white-space: pre-wrap; color: var(--sdj-subtext);
+}
+
 /* Debug HUD */
 .sdj-hud {
   position: fixed; right: 16px; bottom: 96px; z-index: 9999;
