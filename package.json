@@ -1,0 +1,23 @@
+{
+  "name": "spicetify-smart-dj",
+  "version": "1.0.0",
+  "description": "Smart DJ for Spicetify \u2014 intelligent, musically-aware transitions between tracks in the Spotify desktop client.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "install:spicetify": "node scripts/install.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "verify": "npm run typecheck && npm test && npm run build && npm run smoke"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
+  }
+}
