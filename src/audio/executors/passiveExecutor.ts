@@ -17,13 +17,14 @@ export class PassiveExecutor implements TransitionExecutor {
     return true;
   }
 
-  async run(plan: TransitionPlan, _ctx: ExecutionContext): Promise<ExecutionOutcome> {
-    return {
-      status: "skipped",
-      note:
-        plan.technique === "gapless-passthrough"
-          ? "album segue left intact"
-          : "no playback control available — standing down",
-    };
+  async run(plan: TransitionPlan, ctx: ExecutionContext): Promise<ExecutionOutcome> {
+    const note =
+      plan.technique === "gapless-passthrough"
+        ? "album segue left intact"
+        : "no playback control available — standing down";
+    // A passive transition is a real outcome, not an absence of one: it is
+    // recorded so the log shows a deliberate decision rather than a gap.
+    ctx.record.add("TRANSITION_COMPLETED", note);
+    return { status: "skipped", note };
   }
 }

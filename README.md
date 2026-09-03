@@ -108,6 +108,20 @@ your actual client.
 The full investigation, with sources, is in
 [`docs/RESEARCH.md`](docs/RESEARCH.md).
 
+### Fade mode is a cut, not a mix
+
+Where no overlap is available, Smart DJ does **not** perform a long crossfade
+with the volume — that would cost several seconds of music to hide a switch gap
+of about a tenth of a second, and it is what makes a naive implementation sound
+like automation rather than a transition.
+
+What it does instead is a **phrase-timed cut**: the level dips about one bar, to
+roughly a third of your setting rather than to silence, the switch lands on the
+phrase boundary, and the level comes back over about a bar. The dip exists to
+mask the client's gap. The transition is the *timing*, not the fade.
+
+The UI calls this a fade, never a mix.
+
 ### A note for Spotify Free
 
 The brief for this project was Spotify Free, and this is the honest position:
@@ -338,6 +352,8 @@ npm run watch       # rebuild on change
 npm run typecheck   # tsc --noEmit
 npm test            # 297 unit tests
 npm run smoke       # boot the built bundle against a stubbed client
+npm run playback    # a real-time session against a Spotify simulator
+npm run timing      # where the switch lands against the beat grid
 npm run verify      # all of the above
 ```
 
@@ -345,6 +361,13 @@ The engine is pure: `calculateTransition(analyses, settings, capabilities)`
 returns a plan and touches nothing. That is why the whole algorithm — scoring,
 phrasing, cue selection, strategy, fallback — is tested in Node with no browser
 and no Spicetify mock.
+
+`npm run playback` is the one that matters most. It runs the built bundle
+through a real-time session against a simulator that emits `songchange` in
+response to our own `next()` — the behaviour that neither the unit nor the smoke
+suite modelled, and which was hiding a bug that cancelled every transition
+halfway through. It asserts the volume comes back to exactly where the user had
+it, in every interruption case.
 
 `npm run smoke` covers what the unit tests cannot: it loads the real bundle
 against a stubbed Spotify client and checks four end-to-end scenarios — a
@@ -361,6 +384,7 @@ prints the engine's verdict for each, so you can see what it thinks and why.
 
 | | |
 | --- | --- |
+| [REAL-BEHAVIOUR.md](docs/REAL-BEHAVIOUR.md) | what actually happens in the player, and how it was verified |
 | [INSTALLATION.md](docs/INSTALLATION.md) | step-by-step, for non-developers |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | when something is not working |
 | [LIMITATIONS.md](docs/LIMITATIONS.md) | what it cannot do, and why — read this one |

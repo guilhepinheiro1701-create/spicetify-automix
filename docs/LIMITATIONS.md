@@ -3,6 +3,13 @@
 The honest list. Nothing here is softened, and each entry says what Smart DJ
 does instead.
 
+## How any of this was verified
+
+Read [REAL-BEHAVIOUR.md](REAL-BEHAVIOUR.md) first. It sets out what was actually
+exercised against a client simulator and what remains **untested on real
+Spotify** — which is a real and important distinction that the rest of this
+document assumes you have seen.
+
 ## Impossible — and will stay impossible
 
 These are not missing features. They are consequences of where Spotify's audio

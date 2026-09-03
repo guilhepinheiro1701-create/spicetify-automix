@@ -344,7 +344,11 @@ export const REASON_TEXT: Record<UnavailableReason, string> = {
   "not-applicable": "not meaningful in this configuration",
 };
 
-export function explainUnavailable(c: Capability): string {
+export function explainUnavailable(c: Capability | undefined): string {
+  // A capability set built by an older client version — or by a caller that
+  // constructed one by hand — may be missing entries. That must degrade to an
+  // honest "unknown" rather than throwing out of plan construction.
+  if (!c) return "not reported by this client";
   if (c.status === "available") return "available";
   return c.reason ? REASON_TEXT[c.reason] : c.detail;
 }

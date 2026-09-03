@@ -206,9 +206,41 @@ export class SmartDj {
 
   // ── Playback events ───────────────────────────────────────────────────────
 
+  /**
+   * A track change arrived.
+   *
+   * The distinction this makes is the one the whole extension turned on, and
+   * getting it wrong is what made Smart DJ useless in practice: Spotify emits
+   * `songchange` for **our own** `next()` exactly as it does for a user skip.
+   * The old code aborted unconditionally, which cancelled every transition
+   * roughly halfway through — the volume faded down, the track changed, and the
+   * fade-in never ran. What a listener heard was a track that got quieter and
+   * then snapped back to full.
+   *
+   * So: if the audio engine says it just asked for this change, the transition
+   * in flight is allowed to finish. Replanning waits until it does.
+   */
   private async onSongChange(): Promise<void> {
+    const ours = this.audio.isExpectingTrackChange();
+
     this.scheduler.cancel();
-    this.audio.abort("track changed");
+
+    if (ours) {
+      this.audio.clearTrackChangeExpectation();
+      log.debug("track changed because we asked — letting the transition finish");
+      // Keep the current-track pointer honest for anything that reads it, but
+      // do not touch the audio engine or the plan: the executor is mid-fade-in
+      // and owns the volume until it says otherwise.
+      this.currentTrack = player.getCurrentTrack();
+      this.reordersThisTrack = 0;
+      // Replan once the transition has actually finished.
+      void this.replanAfterTransition();
+      return;
+    }
+
+    // Somebody else changed the track: the user, or Spotify running out of
+    // material. Whatever we were doing is now wrong.
+    this.audio.abort("track changed externally");
 
     const track = player.getCurrentTrack();
     this.currentTrack = track;
@@ -227,11 +259,34 @@ export class SmartDj {
     await this.refreshPlan();
   }
 
-  private onPlayPause(): void {
-    if (!player.isPlaying() && this.audio.isRunning) {
-      this.audio.abort("playback paused");
-      this.setStatus({ phase: "armed", progress: 0 });
+  /**
+   * Wait for the in-flight transition to finish, then plan the next one.
+   *
+   * Bounded: if the executor somehow never finishes, replanning happens anyway
+   * rather than the controller sitting idle for the rest of the session.
+   */
+  private async replanAfterTransition(): Promise<void> {
+    const deadline = Date.now() + 15_000;
+    while (this.audio.isRunning && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 120));
     }
+    if (this.audio.isRunning) {
+      log.warn("the transition did not finish in time — replanning anyway");
+      this.audio.abort("transition overran");
+    }
+    this.plan = null;
+    this.setStatus({ phase: "analyzing", progress: 0, plan: null, etaSec: null });
+    if (this.handled.size > 200) this.handled.clear();
+    await this.refreshPlan();
+  }
+
+  private onPlayPause(): void {
+    if (player.isPlaying() || !this.audio.isRunning) return;
+    // Some clients report a momentary pause as the track flips. That is not a
+    // user pausing, and cancelling on it would kill our own fade-in.
+    if (this.audio.isExpectingTrackChange()) return;
+    this.audio.abort("playback paused");
+    this.setStatus({ phase: "armed", progress: 0 });
   }
 
   // ── Planning ──────────────────────────────────────────────────────────────
@@ -469,6 +524,10 @@ export class SmartDj {
       outcome.note,
     );
 
+    // What actually happened, not what was planned. This is the artefact that
+    // makes a real listening session diagnosable.
+    if (this.settings.get().debugMode) this.printRealTimeline(plan, outcome.note);
+
     // The songchange that follows a successful switch replans, which supersedes
     // this run. Do not stamp stale status over the fresh plan.
     if (token !== this.planToken) return;
@@ -486,6 +545,48 @@ export class SmartDj {
       this.settleTimer = null;
       if (this.status.phase === "recovering") this.setStatus({ phase: "idle", progress: 0 });
     }, 2500);
+  }
+
+  /**
+   * Print the transition that just ran: the plan alongside the events that
+   * actually fired, and anything that was expected but never happened.
+   */
+  private printRealTimeline(plan: TransitionPlan, note: string): void {
+    const record = this.audio.transitionLog.latest();
+    if (!record) return;
+
+    const expectFade = plan.executor === "volume-fade";
+    const missing = record.missing(expectFade);
+
+    const lines = [
+      "",
+      "─".repeat(64),
+      `SMART DJ — what actually happened`,
+      "─".repeat(64),
+      `Current      ${plan.from.name}`,
+      `Next         ${plan.to?.name ?? "—"}`,
+      `Score        ${Math.round(plan.compatibility.overall * 100)}% ${plan.band} · confidence ${Math.round(plan.musicalConfidence * 100)}%`,
+      `Strategy     ${plan.strategy} / ${plan.technique}`,
+      `Path         ${plan.executor}` +
+        (this.audio.lastExecutorId && this.audio.lastExecutorId !== plan.executor
+          ? ` → ${this.audio.lastExecutorId} (DEGRADED)`
+          : ""),
+      `Planned      switch at ${plan.startPointSec.toFixed(2)}s` +
+        (plan.leadInSec > 0 ? `, dip starts ${plan.leadInSec.toFixed(2)}s earlier` : ""),
+      expectFade
+        ? `Fade         ${plan.fade.outSec.toFixed(2)}s down to ${Math.round(plan.fade.floor * 100)}%, ${plan.fade.inSec.toFixed(2)}s back`
+        : `Overlap      ${plan.durationSec.toFixed(2)}s programmed into Spotify's mixer`,
+      "",
+      record.format(),
+      "",
+      `Outcome      ${record.outcome ?? "unknown"} — ${note}`,
+    ];
+    if (missing.length > 0) {
+      lines.push(`MISSING      ${missing.join(", ")}`);
+    }
+    lines.push("─".repeat(64), "");
+    // Printed as one block so it survives an interleaved console.
+    console.log(lines.join("\n"));
   }
 
   // ── Status plumbing ───────────────────────────────────────────────────────

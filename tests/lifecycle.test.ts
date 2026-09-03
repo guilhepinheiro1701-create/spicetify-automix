@@ -7,12 +7,19 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { AudioEngine } from "../src/audio/audioEngine.js";
-import { VolumeAutomation } from "../src/audio/automation.js";
+import { VolumeController } from "../src/audio/volumeController.js";
 import { VolumeFadeExecutor } from "../src/audio/executors/volumeFadeExecutor.js";
 import { Emitter } from "../src/core/events.js";
 import { SettingsStore } from "../src/config/settings.js";
 import { calculateTransition } from "../src/engine/transitionEngine.js";
-import { analysis, capabilities, memoryStorage, settings, track } from "./helpers.js";
+import {
+  analysis,
+  capabilities,
+  execContext,
+  memoryStorage,
+  settings,
+  track,
+} from "./helpers.js";
 import type { TransitionPlan } from "../src/core/types.js";
 
 function fadePlan(): TransitionPlan {
@@ -31,19 +38,20 @@ describe("aborting a running transition", () => {
     vi.useFakeTimers();
     const state = { volume: 0.8 };
     const io = { get: () => state.volume, set: (v: number) => ((state.volume = v), true) };
-    const automation = new VolumeAutomation(io);
-    const executor = new VolumeFadeExecutor(automation);
+    const volume = new VolumeController(io);
+    const executor = new VolumeFadeExecutor();
 
     const controller = new AbortController();
-    const run = executor.run(fadePlan(), {
-      signal: controller.signal,
-      onProgress: () => undefined,
-    });
+    const run = executor.run(
+      fadePlan(),
+      execContext({ volume, signal: controller.signal }),
+    );
 
     await vi.advanceTimersByTimeAsync(300);
     expect(state.volume).toBeLessThan(0.8);
 
     controller.abort();
+    volume.cancel("aborted by test");
     await vi.advanceTimersByTimeAsync(200);
     const outcome = await run;
 
@@ -201,5 +209,85 @@ describe("queue reordering safety", () => {
     for (let i = 1; i < BANDS.length; i++) {
       expect(BANDS[i]!.windowUsage).toBeLessThanOrEqual(BANDS[i - 1]!.windowUsage);
     }
+  });
+});
+
+describe("the switch lands where the plan says", () => {
+  it("the lead-in exactly equals the dip the executor will run", async () => {
+    // If these diverge by even a little, next() drifts off the phrase boundary
+    // and the transition stops being synchronised with the music — silently,
+    // because every other assertion still passes.
+    const { calculateTransition: calc } = await import(
+      "../src/engine/transitionEngine.js"
+    );
+    for (const bpm of [90, 110, 128, 145, 174]) {
+      const plan = calc({
+        fromTrack: track({ uri: "spotify:track:a", albumUri: "spotify:album:1" }),
+        toTrack: track({ uri: "spotify:track:b", artists: ["X"], albumUri: "spotify:album:2" }),
+        fromAnalysis: analysis({ uri: "spotify:track:a", tempo: bpm }),
+        toAnalysis: analysis({ uri: "spotify:track:b", tempo: bpm }),
+        settings: settings(),
+        capabilities: capabilities("fade"),
+      });
+      expect(plan.leadInSec, `bpm ${bpm}`).toBeCloseTo(plan.fade.outSec, 6);
+      // And the executor's own floor must not kick in and lengthen it.
+      expect(plan.fade.outSec * 1000, `bpm ${bpm}`).toBeGreaterThanOrEqual(250);
+    }
+  });
+
+  it("the dip is about a bar, not a dissolve", async () => {
+    const { calculateTransition: calc } = await import(
+      "../src/engine/transitionEngine.js"
+    );
+    for (const bpm of [90, 128, 174]) {
+      const barSec = (60 / bpm) * 4;
+      const plan = calc({
+        fromTrack: track({ uri: "spotify:track:a", albumUri: "spotify:album:1" }),
+        toTrack: track({ uri: "spotify:track:b", artists: ["X"], albumUri: "spotify:album:2" }),
+        fromAnalysis: analysis({ uri: "spotify:track:a", tempo: bpm }),
+        toAnalysis: analysis({ uri: "spotify:track:b", tempo: bpm }),
+        settings: settings(),
+        capabilities: capabilities("fade"),
+      });
+      // Roughly one bar each way, and never the multi-second dissolve that made
+      // this sound like volume automation.
+      expect(plan.fade.outSec, `bpm ${bpm} out`).toBeLessThanOrEqual(Math.max(2, barSec * 1.1));
+      expect(plan.fade.inSec, `bpm ${bpm} in`).toBeLessThanOrEqual(Math.max(1.8, barSec));
+      expect(plan.fade.outSec + plan.fade.inSec, `bpm ${bpm} total`).toBeLessThan(4);
+    }
+  });
+
+  it("never dips to silence", async () => {
+    const { calculateTransition: calc } = await import(
+      "../src/engine/transitionEngine.js"
+    );
+    for (const shaping of [true, false]) {
+      const plan = calc({
+        fromTrack: track({ uri: "spotify:track:a", albumUri: "spotify:album:1" }),
+        toTrack: track({ uri: "spotify:track:b", artists: ["X"], albumUri: "spotify:album:2" }),
+        fromAnalysis: analysis({ uri: "spotify:track:a" }),
+        toAnalysis: analysis({ uri: "spotify:track:b" }),
+        settings: settings({ fadeShaping: shaping }),
+        capabilities: capabilities("fade"),
+      });
+      // A hole in the music is more audible than the gap it was meant to mask.
+      expect(plan.fade.floor).toBeGreaterThan(0.15);
+      expect(plan.fade.floor).toBeLessThan(0.6);
+    }
+  });
+
+  it("the overlap path has no dip at all", async () => {
+    const { calculateTransition: calc } = await import(
+      "../src/engine/transitionEngine.js"
+    );
+    const plan = calc({
+      fromTrack: track({ uri: "spotify:track:a", albumUri: "spotify:album:1" }),
+      toTrack: track({ uri: "spotify:track:b", artists: ["X"], albumUri: "spotify:album:2" }),
+      fromAnalysis: analysis({ uri: "spotify:track:a" }),
+      toAnalysis: analysis({ uri: "spotify:track:b" }),
+      settings: settings(),
+      capabilities: capabilities("dj"),
+    });
+    expect(plan.leadInSec).toBe(0);
   });
 });

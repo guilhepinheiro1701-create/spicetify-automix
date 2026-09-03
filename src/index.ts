@@ -33,6 +33,8 @@ export interface SmartDjApi {
   replan(): Promise<void>;
   /** Dump the current plan to the console. */
   explain(): void;
+  /** The event timeline of every transition this session. */
+  transitions(): void;
   teardown(): void;
 }
 
@@ -124,6 +126,17 @@ async function boot(): Promise<void> {
       if (plan.rationale.length) console.log("why:", plan.rationale);
       if (plan.caveats.length) console.warn("limits:", plan.caveats);
       console.groupEnd();
+    },
+    transitions: () => {
+      const log = dj.audio.transitionLog;
+      const incomplete = log.incomplete();
+      console.log(log.format());
+      if (incomplete.length > 0) {
+        console.warn(
+          `[SmartDJ] ${incomplete.length} transition(s) did not complete — ` +
+            "each one's last event says where it stopped",
+        );
+      }
     },
     teardown: () => {
       dj.stop();

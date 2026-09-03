@@ -29,8 +29,8 @@ import type { ExecutionContext, ExecutionOutcome, TransitionExecutor } from "./t
 
 const log = createLogger("exec:native");
 
-/** Let the mixer settle after a settings write before triggering the switch. */
-const SETTLE_MS = 60;
+/** How long to wait for the client to report the new track. */
+const SWITCH_TIMEOUT_MS = 2500;
 
 export class NativeCrossfadeExecutor implements TransitionExecutor {
   readonly id = "native-crossfade";
@@ -40,52 +40,50 @@ export class NativeCrossfadeExecutor implements TransitionExecutor {
   }
 
   async run(plan: TransitionPlan, ctx: ExecutionContext): Promise<ExecutionOutcome> {
-    if (ctx.signal.aborted) return { status: "aborted", note: "aborted before start" };
+    const { record } = ctx;
+    if (ctx.signal.aborted) {
+      record.add("TRANSITION_CANCELLED", "aborted before start");
+      return { status: "aborted", note: "aborted before start" };
+    }
 
     const programmed = await setNativeCrossfade(true, plan.durationSec);
     if (!programmed) {
-      return {
-        status: "failed",
-        note: "the client refused every crossfade write path",
-      };
+      record.add("TRANSITION_FAILED", "the client refused every crossfade write path");
+      return { status: "failed", note: "the client refused every crossfade write path" };
+    }
+    record.add("FADE_OUT_STARTED", `native crossfade programmed to ${plan.durationSec.toFixed(1)}s`);
+
+    if (ctx.signal.aborted) {
+      record.add("TRANSITION_CANCELLED", "aborted while programming");
+      return { status: "aborted", note: "aborted while programming" };
     }
 
-    if (ctx.signal.aborted) return { status: "aborted", note: "aborted while programming" };
-
-    await sleep(SETTLE_MS, ctx.signal);
-    if (ctx.signal.aborted) return { status: "aborted", note: "aborted before switch" };
-
+    // The controller must know this songchange is ours before it can arrive.
+    ctx.expectTrackChange();
     if (!playerNext()) {
+      record.add("TRANSITION_FAILED", "Player.next() was rejected");
       return { status: "failed", note: "Player.next() was rejected" };
     }
+    record.add("NEXT_TRIGGERED", "Spotify's mixer now owns both streams");
+
+    const switchedMs = await ctx.awaitTrackChange(SWITCH_TIMEOUT_MS);
+    record.add(
+      "TRACK_CHANGED",
+      switchedMs === null ? "not observed within the timeout" : `after ${switchedMs} ms`,
+    );
 
     log.info(
       `switched with a ${plan.durationSec.toFixed(1)}s native overlap ` +
-        `(${plan.technique}, ${(plan.compatibility.overall * 100).toFixed(0)}% match)`,
+        `(${plan.strategy}, ${plan.band} ${(plan.compatibility.overall * 100).toFixed(0)}%)`,
     );
 
-    // Report progress for the duration of the overlap so the UI can show it.
+    // Report progress for the length of the overlap so the UI can show it. The
+    // mixer is doing the work; we are only narrating it.
     await reportProgress(plan.durationSec * 1000, ctx);
 
-    return {
-      status: "completed",
-      note: `${plan.durationSec.toFixed(1)}s native crossfade`,
-    };
+    record.add("TRANSITION_COMPLETED", `${plan.durationSec.toFixed(1)}s native crossfade`);
+    return { status: "completed", note: `${plan.durationSec.toFixed(1)}s native crossfade` };
   }
-}
-
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
-  });
 }
 
 async function reportProgress(durationMs: number, ctx: ExecutionContext): Promise<void> {

@@ -331,6 +331,21 @@ export interface TransitionPlan {
   /** Shape of the outgoing/incoming volume ramps. */
   curve: FadeCurve;
 
+  /**
+   * The fade path's own geometry, which is a different thing from `durationSec`.
+   *
+   * `durationSec` sizes an *overlap*: how long two records may sound together,
+   * which wants to be long — sixteen or thirty-two beats. A switch with no
+   * overlap available wants the opposite. Using the overlap length for the fade
+   * is what made Smart DJ sound like volume automation: five seconds down to
+   * silence and three back up costs eight seconds of music to hide a gap of a
+   * tenth of a second.
+   *
+   * A DJ cutting without a mixer moves the level for well under a second and
+   * never all the way down. These are those numbers.
+   */
+  fade: FadeGeometry;
+
   /** Ordered, human-readable reasoning for the debug panel. */
   rationale: string[];
   /** Anything the user should know we could not do. */
@@ -347,6 +362,24 @@ export interface TransitionPlan {
 }
 
 export type FadeCurve = "equal-power" | "linear" | "exponential" | "s-curve";
+
+/** How the fade path moves the level around a cut. */
+export interface FadeGeometry {
+  /** Seconds spent dipping before the switch. */
+  outSec: number;
+  /** Seconds spent coming back after it. */
+  inSec: number;
+  /**
+   * How far down to dip, as a fraction of the user's level.
+   *
+   * Never zero: dipping to silence is audible as a hole in the music, whereas
+   * dipping part-way masks the client's switch gap without the listener
+   * registering a fade at all.
+   */
+  floor: number;
+  /** Whole beats the dip spans, when a grid exists — for the debug view. */
+  outBeats: number | null;
+}
 
 /** A feature the engine considered, and what became of it. */
 export type PlanFeature =

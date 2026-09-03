@@ -404,19 +404,30 @@ export function alignDurationToPhrase(
     candidates.push({ value: v, bonus: isPowerOfTwo ? 0.25 : 0 });
   }
 
-  let best: number | null = null;
-  let bestScore = -Infinity;
-  for (const c of candidates) {
-    if (c.value < minSec || c.value > maxSec) continue;
-    const closeness = 1 / (1 + Math.abs(c.value - desiredSec) / Math.max(bar, 0.001));
-    const score = closeness + c.bonus;
-    if (score > bestScore) {
-      bestScore = score;
-      best = c.value;
+  const pick = (lowerBound: number): number | null => {
+    let winner: number | null = null;
+    let bestScore = -Infinity;
+    for (const c of candidates) {
+      if (c.value < lowerBound || c.value > maxSec) continue;
+      const closeness = 1 / (1 + Math.abs(c.value - desiredSec) / Math.max(bar, 0.001));
+      const score = closeness + c.bonus;
+      if (score > bestScore) {
+        bestScore = score;
+        winner = c.value;
+      }
     }
-  }
+    return winner;
+  };
 
-  return best ?? desiredSec;
+  const exact = pick(minSec);
+  if (exact !== null) return exact;
+
+  // Nothing on the grid fits the window. The upper bound is a hard cap — the
+  // client's crossfade ceiling, the user's maximum — but the lower bound is a
+  // preference, and honouring it to the millisecond is what produces blends of
+  // nine beats. Relax it a little rather than return an unmusical length.
+  const relaxed = pick(minSec * 0.85);
+  return relaxed ?? desiredSec;
 }
 
 

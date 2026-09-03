@@ -13,8 +13,8 @@ import { calculateTransition } from "../src/engine/transitionEngine.js";
 import { NativeCrossfadeExecutor } from "../src/audio/executors/nativeCrossfadeExecutor.js";
 import { VolumeFadeExecutor } from "../src/audio/executors/volumeFadeExecutor.js";
 import { PassiveExecutor } from "../src/audio/executors/passiveExecutor.js";
-import { VolumeAutomation } from "../src/audio/automation.js";
-import { analysis, capabilities, settings, track } from "./helpers.js";
+import { VolumeController } from "../src/audio/volumeController.js";
+import { analysis, capabilities, settings, track, execContext } from "./helpers.js";
 import type { CapabilityFlags } from "../src/platform/capabilities.js";
 import type { PlanFeature, TransitionPlan } from "../src/core/types.js";
 
@@ -49,10 +49,7 @@ describe("crossfade unavailable", () => {
   it("makes no crossfade calls, even if the executor is invoked directly", async () => {
     // No Spicetify global at all: every write path must fail closed.
     const plan = planWith({ crossfade: false });
-    const outcome = await new NativeCrossfadeExecutor().run(plan, {
-      signal: new AbortController().signal,
-      onProgress: () => undefined,
-    });
+    const outcome = await new NativeCrossfadeExecutor().run(plan, execContext());
     expect(outcome.status).toBe("failed");
     expect(outcome.note).toMatch(/refused|crossfade/i);
   });
@@ -135,21 +132,17 @@ describe("volume control unavailable", () => {
 
   it("the passive executor touches nothing", async () => {
     const plan = planWith({ crossfade: false, volumeControl: false });
-    const outcome = await new PassiveExecutor().run(plan, {
-      signal: new AbortController().signal,
-      onProgress: () => undefined,
-    });
+    const outcome = await new PassiveExecutor().run(plan, execContext());
     expect(outcome.status).toBe("skipped");
   });
 
   it("a fade executor whose volume API always fails restores and reports failure", async () => {
     vi.useFakeTimers();
-    const io = { get: () => 0.8, set: () => false };
+    // The volume controller itself must be the failing one, or the executor
+    // never sees the rejection.
+    const volume = new VolumeController({ get: () => 0.8, set: () => false });
     const plan = planWith({ crossfade: false });
-    const run = new VolumeFadeExecutor(new VolumeAutomation(io)).run(plan, {
-      signal: new AbortController().signal,
-      onProgress: () => undefined,
-    });
+    const run = new VolumeFadeExecutor().run(plan, execContext({ volume }));
     await vi.advanceTimersByTimeAsync(3000);
     const outcome = await run;
     expect(outcome.status).toBe("failed");

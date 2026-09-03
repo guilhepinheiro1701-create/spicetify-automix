@@ -45,6 +45,7 @@ import type { Settings } from "../config/defaults.js";
 import { explainUnavailable, type CapabilitySet } from "../platform/capabilities.js";
 import type {
   ShapingPlan,
+  FadeGeometry,
   FeatureVerdict,
   GainPlan,
   TrackAnalysis,
@@ -104,6 +105,7 @@ function passthroughPlan(input: TransitionInput, reason: string): TransitionPlan
     shaping: { enabled: false, shaping: "none", approximated: false },
     gain: { trackA: 0, trackB: 0, perTrackSupported: false },
     curve: input.settings.fadeCurve,
+    fade: { outSec: 0, inSec: 0, floor: 1, outBeats: null },
     rationale: [reason],
     caveats: [],
     verdicts: [],
@@ -134,6 +136,7 @@ function buildVerdicts(input: {
   const { caps, settings } = input;
   const v: FeatureVerdict[] = [];
   const capReason = (id: Parameters<typeof explainUnavailable>[0]) => explainUnavailable(id);
+  const capOf = (id: keyof CapabilitySet["capabilities"]) => caps.capabilities?.[id];
 
   v.push(
     input.overlapping
@@ -147,7 +150,7 @@ function buildVerdicts(input: {
           feature: "audio-overlap",
           used: false,
           code: "capability-unavailable",
-          detail: capReason(caps.capabilities.crossfade),
+          detail: capReason(capOf("crossfade")),
         },
   );
 
@@ -155,7 +158,7 @@ function buildVerdicts(input: {
     feature: "tempo-adjustment",
     used: false,
     code: "capability-unavailable",
-    detail: capReason(caps.capabilities.playbackRate),
+    detail: capReason(capOf("playbackRate")),
   });
 
   if (!settings.beatMatching) {
@@ -216,7 +219,7 @@ function buildVerdicts(input: {
       used: false,
       code: "capability-unavailable",
       detail:
-        "during a native crossfade Spotify owns both streams; " + capReason(caps.capabilities.dsp),
+        "during a native crossfade Spotify owns both streams; " + capReason(capOf("dsp")),
     });
   } else {
     v.push({
@@ -267,7 +270,7 @@ function buildVerdicts(input: {
             feature: "loudness-match",
             used: false,
             code: "capability-unavailable",
-            detail: capReason(caps.capabilities.perTrackGain),
+            detail: capReason(capOf("perTrackGain")),
           }
         : {
             feature: "loudness-match",
@@ -312,6 +315,43 @@ function planGain(
   if (!enabled || !to) return { trackA: 0, trackB: 0, perTrackSupported };
   const l = loudnessCompatibility(from.loudness, to.loudness);
   return { trackA: 0, trackB: round(l.suggestedTrimDb, 1), perTrackSupported };
+}
+
+/**
+ * The fade path's geometry.
+ *
+ * Deliberately short. With no overlap available the level movement is not the
+ * transition — the *switch* is, and it happens at a musically chosen instant.
+ * The dip exists only to mask the client's switch gap, so it wants to be about
+ * a bar of movement and about a third of the way down, not a five-second
+ * dissolve into silence.
+ *
+ * A track with a real outro can afford a slightly longer dip, because that
+ * material is expendable; one that stops dead gets a shorter one.
+ */
+function planFade(
+  from: TrackStructure | null,
+  bpm: number | undefined,
+  settings: Settings,
+): FadeGeometry {
+  // One bar is the natural unit: long enough to be smooth, short enough that
+  // the listener hears a switch rather than an effect.
+  const barSec = bpm ? (60 / bpm) * 4 : 1.6;
+  const hasOutro = Boolean(from?.known && from.outroRunwaySec > 6);
+
+  const outSec = clamp(barSec * (hasOutro ? 1 : 0.75), 0.35, 2);
+  const inSec = clamp(barSec * 0.75, 0.35, 1.8);
+
+  // Dip far enough to hide the gap, not so far that a hole opens up. Shaping
+  // pulls it a little deeper, since front-loading is the point of that setting.
+  const floor = settings.fadeShaping ? 0.28 : 0.4;
+
+  return {
+    outSec: round(outSec, 3),
+    inSec: round(inSec, 3),
+    floor,
+    outBeats: bpm ? Math.max(1, Math.round((outSec * bpm) / 60)) : null,
+  };
 }
 
 /**
@@ -570,6 +610,13 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
     toStructure,
   });
 
+  const fade = planFade(fromStructure, bpmA, settings);
+  // On the fade path the switch happens at the END of the dip, so the executor
+  // has to start that much earlier for the switch itself to land on the phrase
+  // boundary we picked. The overlap path needs no lead-in: Spotify's mixer
+  // begins the blend at the moment of the switch.
+  const leadInSec = overlapping ? 0 : fade.outSec;
+
   // ── Explain it ────────────────────────────────────────────────────────────
   const rationale = [...strategy.rationale];
   if (window.limitedBy !== "unknown") {
@@ -591,6 +638,13 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
     );
   }
   if (phraseAlignment) rationale.push("switch lands on a phrase boundary");
+  if (!overlapping) {
+    rationale.push(
+      `no overlap available, so this is a cut: ${fade.outSec.toFixed(2)}s dip to ` +
+        `${Math.round(fade.floor * 100)}% and ${fade.inSec.toFixed(2)}s back, ` +
+        "shaped to mask the switch rather than to fade the music out",
+    );
+  }
   if (beatAlignment && phaseOffsetSec > 0.001) {
     rationale.push(
       `fired ${(phaseOffsetSec * 1000).toFixed(0)} ms early so B's first downbeat lands on A's`,
@@ -628,12 +682,6 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
     );
   }
 
-  // On the fade path the switch happens at the END of the fade-out, so the
-  // executor has to start that much earlier for the switch itself to land on
-  // the phrase boundary we picked. The overlap path needs no lead-in: Spotify's
-  // mixer begins the blend at the moment of the switch.
-  const leadInSec = overlapping ? 0 : round(durationSec * fadeOutShare(fromStructure), 2);
-
   return {
     from: fromTrack,
     to: toTrack,
@@ -658,6 +706,7 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
     shaping: planShaping(settings.fadeShaping, overlapping),
     gain,
     curve: settings.style === "custom" ? settings.fadeCurve : profile.curve,
+    fade,
     rationale,
     caveats,
     verdicts: buildVerdicts({

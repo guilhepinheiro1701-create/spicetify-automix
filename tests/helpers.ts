@@ -1,5 +1,7 @@
 import type { Section, TrackAnalysis, TrackRef } from "../src/core/types.js";
 import { buildPhraseGrid } from "../src/analysis/structure.js";
+import { VolumeController } from "../src/audio/volumeController.js";
+import { TransitionRecord } from "../src/runtime/transitionLog.js";
 import { DEFAULT_SETTINGS, type Settings } from "../src/config/defaults.js";
 import type {
   CapabilityFlags,
@@ -199,5 +201,40 @@ export function memoryStorage() {
     get: (k: string) => map.get(k) ?? null,
     set: (k: string, v: string) => void map.set(k, v),
     map,
+  };
+}
+
+// ── Execution context ────────────────────────────────────────────────────────
+
+/**
+ * Build an ExecutionContext for testing an executor directly.
+ *
+ * Mirrors what AudioEngine provides, including the track-change expectation
+ * hook — without which an executor's own switch is indistinguishable from a
+ * user skip, which is the bug this all exists to prevent.
+ */
+export function execContext(
+  over: {
+    volume?: VolumeController;
+    signal?: AbortSignal;
+    trackChangeMs?: number | null;
+    onExpect?: () => void;
+    onProgress?: (p: number) => void;
+  } = {},
+) {
+  const volume =
+    over.volume ?? new VolumeController({ get: () => 0.8, set: () => true });
+  const session = volume.begin();
+  const record = new TransitionRecord(session, "A", "B");
+  record.add("TRANSITION_CREATED");
+  return {
+    signal: over.signal ?? new AbortController().signal,
+    session,
+    volume,
+    record,
+    expectTrackChange: over.onExpect ?? (() => undefined),
+    awaitTrackChange: async () =>
+      over.trackChangeMs === undefined ? 40 : over.trackChangeMs,
+    onProgress: over.onProgress ?? (() => undefined),
   };
 }

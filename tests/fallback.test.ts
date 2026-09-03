@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { PassiveExecutor } from "../src/audio/executors/passiveExecutor.js";
 import { calculateTransition } from "../src/engine/transitionEngine.js";
-import { analysis, capabilities, settings, track } from "./helpers.js";
+import { analysis, capabilities, settings, track, execContext } from "./helpers.js";
 import type {
   ExecutionContext,
   ExecutionOutcome,
@@ -18,10 +18,7 @@ async function runLadder(
   ladder: TransitionExecutor[],
   plan: TransitionPlan,
 ): Promise<{ outcome: ExecutionOutcome; ranBy: string }> {
-  const ctx: ExecutionContext = {
-    signal: new AbortController().signal,
-    onProgress: () => undefined,
-  };
+  const ctx: ExecutionContext = execContext();
   const startIndex = Math.max(0, ladder.findIndex((e) => e.id === plan.executor));
   let last: ExecutionOutcome = { status: "failed", note: "nothing accepted the plan" };
   for (let i = startIndex; i < ladder.length; i++) {
@@ -106,16 +103,13 @@ describe("fallback ladder", () => {
   it("passive is always runnable — the ladder can never run out", async () => {
     const passive = new PassiveExecutor();
     expect(passive.canRun()).toBe(true);
-    const outcome = await passive.run(planFor("passive"), {
-      signal: new AbortController().signal,
-      onProgress: () => undefined,
-    });
+    const outcome = await passive.run(planFor("passive"), execContext());
     expect(outcome.status).toBe("skipped");
   });
 
   it("labels an album segue distinctly from a client with no capabilities", async () => {
     const passive = new PassiveExecutor();
-    const ctx = { signal: new AbortController().signal, onProgress: () => undefined };
+    const ctx = execContext();
     const segue = { ...planFor("dj"), technique: "gapless-passthrough" as const };
     const dead = { ...planFor("passive"), technique: "hard-cut" as const };
     expect((await passive.run(segue, ctx)).note).toMatch(/album segue/i);

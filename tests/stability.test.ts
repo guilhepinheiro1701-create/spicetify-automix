@@ -112,10 +112,10 @@ vi.mock("../src/platform/spicetify.js", () => ({
 }));
 
 import { AudioEngine } from "../src/audio/audioEngine.js";
-import { VolumeAutomation } from "../src/audio/automation.js";
+import { VolumeController } from "../src/audio/volumeController.js";
 import { VolumeFadeExecutor } from "../src/audio/executors/volumeFadeExecutor.js";
 import { calculateTransition } from "../src/engine/transitionEngine.js";
-import { analysis, capabilities, settings, track } from "./helpers.js";
+import { analysis, capabilities, settings, track, execContext } from "./helpers.js";
 import type { TransitionPlan } from "../src/core/types.js";
 
 function fadePlan(): TransitionPlan {
@@ -200,11 +200,8 @@ describe("the user takes the volume slider", () => {
         return true;
       },
     };
-    const automation = new VolumeAutomation(io);
-    const run = new VolumeFadeExecutor(automation).run(fadePlan(), {
-      signal: new AbortController().signal,
-      onProgress: () => undefined,
-    });
+    const volume = new VolumeController(io);
+    const run = new VolumeFadeExecutor().run(fadePlan(), execContext({ volume }));
 
     await vi.advanceTimersByTimeAsync(300);
     // A human moves it somewhere we did not put it.
@@ -283,12 +280,12 @@ describe("the client's APIs fail", () => {
         return true;
       },
     };
-    const automation = new VolumeAutomation(io);
-    automation.captureBaseline();
+    const volume = new VolumeController(io);
+    volume.begin();
     player.volume = 0.2; // as if a fade had pulled it down
 
     player.failEverything = true;
-    automation.restore();
+    volume.cancel("client refusing writes");
     expect(player.volume).toBe(0.2);
 
     // A brief blip: the client comes back before the retries run out.
