@@ -388,26 +388,28 @@ export function alignDurationToPhrase(
   const phrase = phraseDurationSec(grid);
   if (bar <= 0) return desiredSec;
 
-  const candidates: { value: number; isPhrase: boolean }[] = [];
+  // DJs count in eights. A whole phrase is best; failing that a power-of-two
+  // number of bars (4, 8, 16, 32 beats) still resolves. Three bars does not,
+  // which is why plain "nearest whole bar" is not good enough here.
+  const candidates: { value: number; bonus: number }[] = [];
   for (let n = 1; n <= 8; n++) {
     const v = phrase * n;
     if (v > maxSec) break;
-    candidates.push({ value: v, isPhrase: true });
+    candidates.push({ value: v, bonus: 0.45 });
   }
   for (let n = 1; n <= 32; n++) {
     const v = bar * n;
     if (v > maxSec) break;
-    candidates.push({ value: v, isPhrase: false });
+    const isPowerOfTwo = (n & (n - 1)) === 0;
+    candidates.push({ value: v, bonus: isPowerOfTwo ? 0.25 : 0 });
   }
 
   let best: number | null = null;
   let bestScore = -Infinity;
   for (const c of candidates) {
     if (c.value < minSec || c.value > maxSec) continue;
-    // Closeness to what the engine asked for, plus a thumb on the scale for
-    // phrase multiples so a phrase wins over a bar at similar distance.
     const closeness = 1 / (1 + Math.abs(c.value - desiredSec) / Math.max(bar, 0.001));
-    const score = closeness + (c.isPhrase ? 0.45 : 0);
+    const score = closeness + c.bonus;
     if (score > bestScore) {
       bestScore = score;
       best = c.value;
@@ -415,4 +417,45 @@ export function alignDurationToPhrase(
   }
 
   return best ?? desiredSec;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase alignment
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Where the incoming track's beat grid sits relative to its own start.
+ *
+ * This is the number the old code was missing. Snapping the *outgoing* track's
+ * exit to one of its own downbeats is only half of a phase-locked switch: the
+ * incoming track begins at its position zero, and its first downbeat lands
+ * wherever its grid origin says — typically a fraction of a bar in, because of a
+ * pickup, a count-in, or a moment of silence before the first hit.
+ *
+ * Firing the switch that many seconds *early* makes the two grids coincide.
+ * Returns a value in [0, one bar).
+ */
+export function gridPhaseOffsetSec(grid: PhraseGrid | null): number {
+  if (!grid) return 0;
+  const bar = grid.secPerBeat * grid.beatsPerBar;
+  if (!Number.isFinite(bar) || bar <= 0) return 0;
+  const phase = ((grid.originSec % bar) + bar) % bar;
+  return Number.isFinite(phase) ? phase : 0;
+}
+
+/**
+ * The instant to trigger the switch so that the incoming track's first downbeat
+ * lands on `targetDownbeatSec` of the outgoing one.
+ *
+ * `latencyCompensationSec` is the user's own correction for however long their
+ * client takes to actually change track — we cannot measure that from inside
+ * the renderer, so it is exposed as a setting rather than guessed at.
+ */
+export function phaseAlignedSwitchSec(
+  targetDownbeatSec: number,
+  incomingGrid: PhraseGrid | null,
+  latencyCompensationSec = 0,
+): number {
+  return targetDownbeatSec - gridPhaseOffsetSec(incomingGrid) - latencyCompensationSec;
 }

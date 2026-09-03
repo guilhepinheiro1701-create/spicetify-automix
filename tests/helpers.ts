@@ -12,6 +12,7 @@ export function track(over: Partial<TrackRef> = {}): TrackRef {
     albumUri: "spotify:album:aaa",
     durationMs: 240_000,
     isLocal: false,
+    provider: "context",
     ...over,
   };
 }

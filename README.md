@@ -37,19 +37,39 @@ For each transition it decides, from the music:
 
 - **when to start** — from the mastering fade-out, a section boundary, or the
   phrase grid, snapped to a downbeat
-- **how long to run** — sized to the pair's compatibility and the track's tempo,
-  rounded to whole bars
+- **how long to run** — sized to the *structural runway*: how much outro the
+  outgoing track has and how much intro the incoming one has. Two tracks at the
+  same BPM get very different transitions depending on whether one fades out
+  over thirty seconds or stops dead
 - **which technique** — a long beat-aligned blend, a phrase blend, a short
   blend, a shaped switch, or deliberately nothing
 - **where to come in** on the incoming track, skipping a dead intro when there
   is one
 - **whether to refuse** — two tracks that do not fit get a clean switch, not a
   smeared crossfade
+- **which of eight strategies fits** — SMOOTH, DJ, FAST, LONG, ENERGY RISE,
+  ENERGY DROP, HARMONIC or SAFE, chosen from the score band, the energy
+  direction and the runway
 
 Scoring is weighted tempo 30% / key 22% / energy 18% / phrase 15% / loudness 9% /
 style 6%, using DJ practice for every threshold: the Camelot wheel for harmonic
-compatibility, ±6%/±8% tempo windows, 8/16/32-beat phrasing. The reasoning is
-written up in [`docs/ALGORITHM.md`](docs/ALGORITHM.md).
+compatibility, ±6%/±8% tempo windows, 8/16/32-beat phrasing. A catastrophic
+failure in a hard constraint *caps* the result rather than being averaged away —
+two tracks 50% apart in tempo do not become mixable because they share a key.
+
+The score lands in a band that really drives behaviour:
+
+| Band | Score | What changes |
+| --- | --- | --- |
+| **PERFECT** | 96–100 | use the whole runway |
+| **EXCELLENT** | 90–95 | a long mix is safe |
+| **GOOD** | 80–89 | one phrase, no longer |
+| **ACCEPTABLE** | 65–79 | short overlap only |
+| **POOR** | <65 | no overlap — switch cleanly |
+
+The reasoning is written up in [`docs/ALGORITHM.md`](docs/ALGORITHM.md), and an
+honest audit of what works, what is estimated and what was removed as theatre is
+in [`docs/AUDIT.md`](docs/AUDIT.md).
 
 ## Be clear about the limits
 
@@ -62,17 +82,21 @@ your actual client.
 | --- | --- | --- |
 | ✅ | Transition timing, length, cue points | Fully under our control |
 | ✅ | Phrase matching | Grid recovered from bars + sections |
-| ✅ | Downbeat (phase) alignment | Switch scheduled onto a downbeat |
+| ✅ | Downbeat (phase) alignment | The switch is fired early by the incoming track's own grid phase, so the two grids actually coincide. Residual error is the client's switch latency — tunable in Advanced. |
+| ✅ | Structure-aware sizing | Intro/build/drop/breakdown/outro inferred; the runway sets the length |
+| ✅ | Set-level analysis | The whole A→B→C→D→E chain is scored and weak links flagged |
 | ✅ | Harmonic mixing | Camelot scoring, where key data exists |
 | ✅ | Preserving album segues | Detected and left alone |
 | ⚠️ | **Real audio overlap** | Only where the client lets us program its own crossfade — usually Premium. Otherwise a shaped switch with no overlap. |
-| ⚠️ | Energy matching | Derived from segment/beat data; Spotify's `energy` feature is gone |
+| ✅ | Energy matching | Spotify's **real** `energy`/`valence` from the client's internal audio-features service, with a derived proxy as fallback |
+| ⚠️ | Queue reordering | Only entries you queued yourself. Playlist order cannot be changed without duplicating tracks. Opt-in, off by default. |
 | ⚠️ | Loudness matching | Fade path only; impossible during a native overlap |
 | ⚠️ | BPM / key / structure | Available for many tracks, not all |
 | ❌ | **Beatmatching (tempo warp)** | No playback-rate control for music. The needed adjustment is *reported*, never applied. |
 | ❌ | **Real EQ / filters** | No DSP hook exists. Intent is planned and approximated broadband, always flagged. |
 | ❌ | Per-track gain during an overlap | One master fader, not two |
 | ❌ | Waveform / live spectrum | No access to the audio signal |
+| ❌ | Reordering playlist tracks | Removing a context track does not stop it coming round again |
 
 The full investigation, with sources, is in
 [`docs/RESEARCH.md`](docs/RESEARCH.md).
@@ -88,6 +112,20 @@ to skip a dead intro — there is simply no overlap, because none is available.
 
 That is worth having, and it is not the same thing as a crossfade. Smart DJ will
 not claim otherwise.
+
+Phase 2 put real work into this path specifically, because it is the one most
+people will be on:
+
+- **The switch now lands on the beat.** Previously the fade *started* on the
+  phrase boundary, which put the actual track change over half a transition
+  late. Plans now carry a lead-in so the switch itself is on the music.
+- **The gap is measured, not guessed.** The executor waits for the client to
+  actually report the new track instead of sleeping a fixed 220 ms.
+- **The fade split follows the structure.** A track with a real outro spends
+  longer leaving; one that stops dead gets out fast and gives the time to the
+  incoming track.
+- **Intro skipping works here and only here** — a seek mid-overlap is impossible,
+  so the Free path can do something the Premium one cannot.
 
 One thing to know either way: where the overlap path *is* available, Smart DJ
 drives Spotify's own crossfade setting — it writes the length it computed for
@@ -144,6 +182,8 @@ Open the panel from the **Smart DJ** button in the playbar.
 | Smart EQ | on | Bass-swap *intent*; approximated broadband on the fade path |
 | Energy matching | on | Prefer a gentle lift over a jarring jump |
 | Loudness normalization | on | Attenuate an incoming track that is much louder |
+| Reorder the queue | **off** | Pull a better-matching track forward when the next transition would be poor. Only moves tracks you queued yourself. |
+| Switch latency | 0 ms | How long your client takes to change track. Dial in by ear if downbeat alignment sounds early or late. |
 
 **Advanced:** minimum and maximum length, blend floor (the compatibility below
 which the engine refuses to overlap), fade curve, auto mode, dead-intro skipping,
@@ -172,15 +212,22 @@ Next      Instant Crush
 BPM       128 → 126
 Key       8A → 8A
 Energy    0.81 → 0.79
-Match     94% (conf 82%)
-Plan      beat-aligned-blend / 32 beats
+Match     94% EXCELLENT (conf 82%)
+Strategy  LONG
+Plan      beat-aligned-blend / 16 beats
+Runway    18.0s (outro)
+Structure IBBBO · intro 24s · outro 18s
 Phrase    matched
-Downbeat  locked
+Downbeat  locked −180ms
+Chain     94 · 71 · 88
 Path      native-crossfade
-Source    spotify-internal
+Source    spotify-features
 ETA       42.3s
 Status    ARMED
 ```
+
+`Chain` is the upcoming A→B→C→D→E transitions, so a bad one three tracks away is
+visible before it arrives.
 
 From the console:
 
@@ -242,7 +289,7 @@ Confirm `spicetify config extensions` lists `smart-dj.js`, re-run
 npm run build       # bundle to dist/smart-dj.js
 npm run watch       # rebuild on change
 npm run typecheck   # tsc --noEmit
-npm test            # 199 unit tests
+npm test            # 239 unit tests
 npm run smoke       # boot the built bundle against a stubbed client
 npm run verify      # all of the above
 ```
@@ -253,10 +300,15 @@ phrasing, cue selection, strategy, fallback — is tested in Node with no browse
 and no Spicetify mock.
 
 `npm run smoke` covers what the unit tests cannot: it loads the real bundle
-against a stubbed Spotify client and checks three end-to-end scenarios — a
-Premium-shaped client producing a phrase-aligned overlap, a Free-shaped client
-falling back to a fade and restoring the user's volume exactly, and an album
-segue being left alone.
+against a stubbed Spotify client and checks four end-to-end scenarios — a
+Premium-shaped client producing a phrase-aligned overlap with Spotify's real
+energy values, a Free-shaped client falling back to a fade and restoring the
+user's volume exactly, an album segue being left alone, and the queue being left
+untouched while reordering is off.
+
+`tests/scenarios.test.ts` is the corpus of realistic pairings — house→house,
+EDM→EDM, pop→EDM, ballad→EDM, long-outro→long-intro and the extremes — and it
+prints the engine's verdict for each, so you can see what it thinks and why.
 
 Layout and design decisions: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 

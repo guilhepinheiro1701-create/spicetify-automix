@@ -90,9 +90,32 @@ The scores are not linear in wheel distance on purpose. DJs treat the three
 of how far around the wheel it happens to be. The decay past that point only
 exists so ordering stays sensible.
 
+## 3b. Hard constraints cap, they do not average
+
+A weighted mean is the wrong shape for a catastrophic failure. Two tracks 50%
+apart in tempo do not become mixable because they happen to share a key, a
+loudness and a timbre — and with no rate control here, that gap cannot be closed
+at all.
+
+So a badly failing constraint *caps* the overall score:
+
+| Component | Fails below | Caps the result at |
+| --- | --- | --- |
+| Tempo | 0.15 | 0.50 (POOR) |
+| Key | 0.20 | 0.72 (ACCEPTABLE) |
+| Energy | 0.15 | 0.70 (ACCEPTABLE) |
+
+The cap respects the weights: a component the caller weighted to zero was
+explicitly declared irrelevant and cannot veto.
+
+This is what moves 60 → 180 BPM from ACCEPTABLE (66%) to POOR (50%), which is
+where a DJ would put it.
+
 ## 4. Energy
 
-Peak at **+0.04** — a gentle lift. Tolerance is asymmetric (0.22 up, 0.18 down)
+Energy is Spotify's own figure where the client's internal audio-features
+service answers, and a proxy derived from segment loudness and timbre only when
+it does not. Peak at **+0.04** — a gentle lift. Tolerance is asymmetric (0.22 up, 0.18 down)
 because sets build; a drop needs more justification than a rise. Past **±0.45**
 the score is capped at 0.12 no matter what the curve says, because 0.25 → 0.95
 is not a transition, it is a collision.
@@ -114,6 +137,37 @@ timbre coefficient 1 (25%).
 
 The 75th percentile rather than the mean is the important choice: a two-minute
 ambient intro should not make a banger read as calm.
+
+## 4b. Structure, and why it decides the length
+
+The single biggest change in Phase 2. The old formula was
+`beats × intensity × compatibility × style`, which looks sophisticated and in
+practice produced roughly the same 8–10 s answer for every pair, because the
+clamps dominated.
+
+What actually decides how long a mix can be is the **runway**:
+
+- **`outroRunwaySec`** — how many seconds of the outgoing track are expendable.
+  The labelled outro if there is one, otherwise the mastering fade-out.
+- **`introRunwaySec`** — how many seconds the incoming track takes to reach full
+  energy. The room it has to come up in.
+
+The mixable window is the smaller of the two, and the plan records which side
+capped it. Overlapping longer than A's outro means mixing over material the
+listener still wants; longer than B's intro means B's first real moment lands
+underneath the old track.
+
+Section labels come from the energy contour: a quiet run at the start is the
+intro, at the end the outro, a quiet stretch *between* two loud ones is a
+breakdown rather than an outro, a local maximum near the ceiling is a drop, and
+a section climbing steeply into one is a build.
+
+Two same-BPM, same-key pairs therefore get very different transitions:
+
+```
+long outro → long intro     runway 18s   EXCELLENT   16 beats
+short outro → short intro   runway  2s   GOOD         8 beats, quick-blend
+```
 
 ## 5. Phrase matching
 
@@ -154,6 +208,42 @@ energy, cap the skip at 30 s (or a quarter of the track), and land on a downbeat
 Intro skipping needs a seek after the switch, which cannot happen mid-overlap —
 so it is available on the fade path only, and the plan says so.
 
+## 6b. Phase alignment — making the claim true
+
+Snapping A's exit to one of A's own downbeats is only half a phase-locked
+switch. The incoming track starts at *its* position zero, and its first downbeat
+lands wherever its grid origin says — typically a fraction of a bar in, because
+of a pickup, a count-in, or a moment of silence.
+
+Phase 1 set `beatAlignment: true` on the strength of the first half alone. That
+was wrong, and it is fixed:
+
+```
+phase = gridB.originSec mod barB          # where B's grid sits, in [0, one bar)
+switch at = A_downbeat − phase − latency  # so the two grids coincide
+```
+
+The residual is however long the client takes to actually change track, which
+cannot be measured from inside the renderer. Rather than guess, it is exposed as
+**Advanced → switch latency** and stated as a caveat on every plan that claims
+alignment.
+
+`beatAlignment` is now only true when both tracks have a real grid, B's grid
+confidence is above 0.25, and the tempos are within 8% — otherwise the two
+pulses drift apart after the downbeat anyway.
+
+## 6c. The Free path lands on the beat too
+
+With no overlap, the fade executor's `next()` call *is* the transition. Phase 1
+started the fade at the chosen phrase boundary, which put the actual switch over
+half a transition late — every Free-account transition was mistimed.
+
+Plans now carry `leadInSec`, and the scheduler arms at
+`startPointSec − leadInSec`, so the **switch itself** lands on the music. The
+lead-in equals the fade-out portion, whose share of the budget follows the
+outgoing track's structure: 65% when it has a real outro to spend, 40% when it
+stops dead and the incoming track needs the time instead.
+
 ## 7. Choosing a technique
 
 ```
@@ -178,23 +268,45 @@ brief's own bad example — 90 BPM in C major into 145 BPM in F♯ minor — has
 good long transition, and producing one anyway would be worse than a clean
 switch. This is the difference between a DJ and a crossfade slider.
 
+## 7b. Eight strategies
+
+The **technique** is the mechanism (overlap, fade, nothing). The **strategy** is
+the musical character, and it is what the debug panel names:
+
+| Strategy | Chosen when | Effect on length |
+| --- | --- | --- |
+| `DJ` | top band, both grids, ≤6% tempo gap | ×1.1, beat-aligned |
+| `LONG` | top band and ≥12 s of runway | ×1.3 |
+| `ENERGY RISE` | energy climbs ≥0.12 | ×0.8 — build, don't dissolve |
+| `ENERGY DROP` | energy falls ≥0.12 | ×1.25 — let it settle |
+| `HARMONIC` | keys agree but grids or tempos do not | ×1.0, or ×0.55 when the tempo gap is unmixable |
+| `FAST` | little runway, or a merely acceptable band | ×0.65 |
+| `SMOOTH` | the workable middle | ×1.0 |
+| `SAFE` | poor band, album segue, spoken word, live recording, or no client capability | ×0.6 or nothing at all |
+
 ## 8. Sizing the blend
 
+Runway first, tempo second:
+
 ```
-beats = base(technique, style)
-      × (0.6 + intensity × 0.8)             ← the user's thumb on the scale
-      × (1 − (1 − compat) × sensitivity × 0.7)  ← the engine's
-      × style.lengthBias
+1. window   = min(outroRunway(A), introRunway(B))     ← structure
+2. ceiling  = max(style.min, window × band.windowUsage)
+3. desired  = base(technique) × intensity × strategy.lengthFactor × style.bias
+4. hardMax  = min(style.max × band.windowUsage, style.max, user.max,
+                  12s on the overlap path, track × 0.2)
+5. duration = clamp(desired, lower, min(ceiling, hardMax))
+6. align onto the grid, allowed 12% overshoot of the *structural* ceiling only
 ```
 
-then snapped to a phrase length (4/8/16/32/64), converted to seconds at track A's
-tempo, and clamped by: the style's own bounds, then the user's min/max, then
-Spotify's 12 s crossfade ceiling on the overlap path, then a fifth of the track's
-length. Finally it is rounded to a whole number of bars so the blend resolves
-musically.
+The band caps length in absolute terms as well as a share of the runway.
+Without that, a mediocre pair with a huge runway outlasted a perfect pair with a
+modest one — which is exactly backwards, and is what the scenario corpus caught.
 
-The compatibility term is what makes a mediocre pair get a short transition
-automatically, without the user having to notice.
+Step 6 prefers whole **phrases**, then power-of-two **bar** counts (4, 8, 16, 32
+beats). Plain "nearest whole bar" produced 12-beat blends; DJs count in eights.
+The 12% overshoot applies only to the structural ceiling, which is a judgement
+about expendable material rather than a wall — the hard caps in step 4 always
+hold.
 
 ## 9. What the plan honestly cannot do
 

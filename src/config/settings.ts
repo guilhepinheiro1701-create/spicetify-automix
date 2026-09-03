@@ -56,9 +56,11 @@ export function sanitize(raw: unknown): Settings {
     skipDeadIntro: bool(input.skipDeadIntro, d.skipDeadIntro),
     preserveAlbumGapless: bool(input.preserveAlbumGapless, d.preserveAlbumGapless),
     autoMode: bool(input.autoMode, d.autoMode),
+    queueReordering: bool(input.queueReordering, d.queueReordering),
     minCompatibilityForBlend: clamp01(
       num(input.minCompatibilityForBlend, d.minCompatibilityForBlend, 0, 1),
     ),
+    switchLatencyMs: num(input.switchLatencyMs, d.switchLatencyMs, -500, 500),
     fadeCurve: VALID_CURVES.includes(input.fadeCurve as FadeCurve)
       ? (input.fadeCurve as FadeCurve)
       : d.fadeCurve,

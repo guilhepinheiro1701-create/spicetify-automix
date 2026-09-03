@@ -4,38 +4,43 @@
  * When the client will not let us drive its crossfade mixer (most commonly on
  * a Free account on a recent build, where crossfade is gated behind Premium),
  * there is no way to get two tracks sounding at once. Pretending otherwise
- * would be dishonest, so this executor does the next best thing, which is
- * what a DJ does when they cannot beatmatch either: it makes the *switch*
- * musical.
+ * would be dishonest, so this executor does the next best thing, which is what
+ * a DJ does when they cannot beatmatch either: it makes the *switch* musical.
  *
- *  1. Fade the outgoing track down over the tail of the blend, starting from
- *     the phrase boundary the engine picked. Because the plan's EQ intent
- *     wanted the low end out first, the fade is weighted toward the front of
- *     the ramp rather than linear — broadband, but the same gesture.
- *  2. Switch at the chosen instant, silently.
- *  3. Optionally seek past a dead intro on the incoming track — something the
- *     native-overlap path cannot do.
- *  4. Fade back up to the user's level, with the loudness trim applied so the
- *     new track does not arrive louder than the old one left.
+ *   1. Fade the outgoing track down, starting early enough that the switch
+ *      itself lands on the phrase boundary the engine chose. The split between
+ *      fading out and fading in follows the outgoing track's structure — a real
+ *      outro is expendable, a track that stops dead is not.
+ *   2. Switch, and wait for the client to *actually* change track rather than
+ *      guessing at a fixed delay. This is what closes the audible gap.
+ *   3. Land the incoming track on a downbeat, seeking past a dead intro when
+ *      the plan asked for one — something the overlap path cannot do.
+ *   4. Fade back up at the loudness-matched level, so the new track does not
+ *      arrive louder than the old one left.
  *
- * The result has no overlap, but it starts and ends on the music's own
- * structure and it never jumps in level. That is a real transition, and the UI
- * labels it as a fade rather than a mix.
+ * There is no overlap. But it starts and ends on the music's own structure and
+ * it never jumps in level, and the UI calls it a fade rather than a mix.
  */
 
 import { createLogger } from "../../core/logger.js";
 import { clamp01, dbToGain } from "../../core/util.js";
-import { next as playerNext, seekMs, getVolume, setVolume } from "../../platform/spicetify.js";
+import {
+  next as playerNext,
+  seekMs,
+  getVolume,
+  setVolume,
+  getCurrentTrack,
+} from "../../platform/spicetify.js";
 import { VolumeAutomation } from "../automation.js";
 import type { TransitionPlan } from "../../core/types.js";
 import type { ExecutionContext, ExecutionOutcome, TransitionExecutor } from "./types.js";
 
 const log = createLogger("exec:fade");
 
-/** How much of the blend budget goes to the fade-out vs the fade-in. */
-const OUT_SHARE = 0.55;
-/** Time for the client to actually change track before we start fading up. */
-const SWITCH_SETTLE_MS = 220;
+/** Give up waiting for the track change and fade up anyway. */
+const SWITCH_TIMEOUT_MS = 1200;
+/** How often to check whether the client has actually changed track. */
+const SWITCH_POLL_MS = 20;
 /** Never fade the outgoing track to true silence — a hair of level avoids a click. */
 const OUT_FLOOR = 0.02;
 
@@ -44,8 +49,7 @@ export class VolumeFadeExecutor implements TransitionExecutor {
   private readonly automation: VolumeAutomation;
 
   constructor(automation?: VolumeAutomation) {
-    this.automation =
-      automation ?? new VolumeAutomation({ get: getVolume, set: setVolume });
+    this.automation = automation ?? new VolumeAutomation({ get: getVolume, set: setVolume });
   }
 
   canRun(plan: TransitionPlan): boolean {
@@ -61,22 +65,27 @@ export class VolumeFadeExecutor implements TransitionExecutor {
 
     try {
       const totalMs = plan.durationSec * 1000;
-      const outMs = Math.max(200, totalMs * OUT_SHARE);
-      const inMs = Math.max(200, totalMs * (1 - OUT_SHARE));
+      // The engine already sized the lead-in from the same split, so the fade
+      // out has to match it exactly or the switch drifts off the phrase.
+      const outMs = Math.max(
+        200,
+        plan.leadInSec > 0 ? plan.leadInSec * 1000 : totalMs * 0.55,
+      );
+      const inMs = Math.max(200, totalMs - outMs);
 
-      // The EQ plan asked for the low end to come out early. We cannot filter,
-      // but we can front-load the fade so the outgoing track clears the space
-      // sooner — the same musical intent, applied broadband.
-      const curve = plan.eq.enabled ? "exponential" : plan.curve;
+      // The plan wanted the low end out of the way first. We cannot filter, but
+      // front-loading the ramp clears the outgoing track sooner, which is the
+      // audible half of the same gesture.
+      const outCurve = plan.eq.shaping === "front-loaded-fade" ? "exponential" : plan.curve;
 
       // ── 1. Fade out ──────────────────────────────────────────────────────
       const outcome = await this.automation.ramp({
         from: baseline,
         to: baseline * OUT_FLOOR,
         durationMs: outMs,
-        curve,
+        curve: outCurve,
         direction: "out",
-        onTick: (p) => ctx.onProgress(p * OUT_SHARE),
+        onTick: (p) => ctx.onProgress(p * (outMs / (outMs + inMs))),
       });
 
       if (outcome === "user-override") {
@@ -91,21 +100,33 @@ export class VolumeFadeExecutor implements TransitionExecutor {
         return { status: "aborted", note: "aborted during fade-out" };
       }
 
-      // ── 2. Switch ────────────────────────────────────────────────────────
+      // ── 2. Switch, and wait for it to actually happen ─────────────────────
+      const before = getCurrentTrack()?.uri ?? null;
       if (!playerNext()) {
         this.automation.restore();
         return { status: "failed", note: "Player.next() was rejected" };
       }
-      await sleep(SWITCH_SETTLE_MS, ctx.signal);
 
-      // ── 3. Skip a dead intro, if the plan asked for one ───────────────────
-      if (plan.entryPointSec > 0.5 && !ctx.signal.aborted) {
+      const switchedMs = await waitForTrackChange(before, ctx.signal);
+      if (switchedMs === null) {
+        log.debug("track change not observed within the timeout — fading up anyway");
+      } else {
+        log.debug(`client changed track after ${switchedMs} ms`);
+      }
+      if (ctx.signal.aborted) {
+        this.automation.restore();
+        return { status: "aborted", note: "aborted during the switch" };
+      }
+
+      // ── 3. Land on a downbeat ────────────────────────────────────────────
+      // Only the fade path can do this: seeking mid-overlap is not possible.
+      if (plan.entryPointSec > 0.5) {
         if (seekMs(plan.entryPointSec * 1000)) {
           log.debug(`seeked into track B at ${plan.entryPointSec.toFixed(1)}s`);
         }
       }
 
-      // ── 4. Fade in, at the loudness-matched level ────────────────────────
+      // ── 4. Fade in, at the loudness-matched level ─────────────────────────
       // A positive trim would push past the user's setting, so we only ever
       // attenuate: the incoming track can arrive quieter, never louder.
       const trimGain = clamp01(dbToGain(Math.min(0, plan.gain.trackB)));
@@ -117,7 +138,7 @@ export class VolumeFadeExecutor implements TransitionExecutor {
         durationMs: inMs,
         curve: plan.curve,
         direction: "in",
-        onTick: (p) => ctx.onProgress(OUT_SHARE + p * (1 - OUT_SHARE)),
+        onTick: (p) => ctx.onProgress(outMs / (outMs + inMs) + p * (inMs / (outMs + inMs))),
       });
 
       if (inOutcome === "user-override") {
@@ -139,7 +160,7 @@ export class VolumeFadeExecutor implements TransitionExecutor {
 
       log.info(
         `faded through the switch over ${plan.durationSec.toFixed(1)}s ` +
-          `(${(plan.compatibility.overall * 100).toFixed(0)}% match)`,
+          `(${plan.strategy}, ${plan.band} ${(plan.compatibility.overall * 100).toFixed(0)}%)`,
       );
       return {
         status: "completed",
@@ -157,16 +178,29 @@ export class VolumeFadeExecutor implements TransitionExecutor {
   }
 }
 
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
+/**
+ * Wait until the client reports a different track.
+ *
+ * The old code slept for a fixed 220 ms, which is either a wasted gap or too
+ * early depending on the machine. Polling the player's own state closes the
+ * gap on a fast client without risking fading up into the tail of the old
+ * track on a slow one. Returns the observed delay, or null on timeout.
+ */
+function waitForTrackChange(
+  previousUri: string | null,
+  signal: AbortSignal,
+): Promise<number | null> {
+  const started = Date.now();
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    const finish = (value: number | null) => {
+      clearInterval(timer);
+      resolve(value);
+    };
+    const timer = setInterval(() => {
+      if (signal.aborted) return finish(null);
+      const now = getCurrentTrack()?.uri ?? null;
+      if (now !== null && now !== previousUri) return finish(Date.now() - started);
+      if (Date.now() - started >= SWITCH_TIMEOUT_MS) return finish(null);
+    }, SWITCH_POLL_MS);
   });
 }

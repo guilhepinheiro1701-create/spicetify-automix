@@ -5,6 +5,9 @@
  * engine, audio and UI layers can evolve independently.
  */
 
+import type { TrackStructure } from "../analysis/sections.js";
+export type { TrackStructure, SectionRole, ClassifiedSection } from "../analysis/sections.js";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Track identity & analysis
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18,11 +21,19 @@ export interface TrackRef {
   albumUri: string | null;
   durationMs: number;
   isLocal: boolean;
+  /**
+   * Where this entry came from in the player's queue model. Only `"queue"`
+   * entries — the ones the user queued by hand — can be reordered; `"context"`
+   * entries are the playlist or album playing through, and removing one does
+   * not stop it coming round again.
+   */
+  provider: "queue" | "context" | "autoplay" | "unknown";
 }
 
 /** Where a piece of analysis came from. Drives confidence and the UI badge. */
 export type AnalysisSource =
-  | "spotify-internal" // Spotify desktop client's own audio-attributes service
+  | "spotify-internal" // the client's audio-analysis service (beat grid, sections)
+  | "spotify-features" // the client's audio-features service (real energy, valence)
   | "manual" // user-entered override
   | "external" // opt-in third-party provider configured by the user
   | "heuristic" // derived from duration/metadata only — very low confidence
@@ -74,8 +85,20 @@ export interface TrackAnalysis {
   energy?: number;
   /** Derived 0..1 spectral brightness. */
   brightness?: number;
-  /** Derived 0..1 danceability-ish rhythmic regularity. */
+  /** Derived 0..1 rhythmic regularity, from the beat grid. */
   pulseStrength?: number;
+
+  /**
+   * Spotify's own high-level descriptors, when the audio-features service
+   * answers. These are the real thing rather than anything we derived, and the
+   * analyzer prefers them over the proxies wherever both exist.
+   */
+  danceability?: number;
+  valence?: number;
+  acousticness?: number;
+  instrumentalness?: number;
+  speechiness?: number;
+  liveness?: number;
 
   /** Seconds. Where the recording has faded in / starts fading out. */
   endOfFadeIn?: number;
@@ -94,6 +117,13 @@ export interface TrackAnalysis {
    * track stays phrase-aware without having to re-store its whole beat grid.
    */
   grid?: PhraseGrid | null;
+
+  /**
+   * Labelled structure — intro, drops, breakdown, outro — plus the intro and
+   * outro runways the transition engine sizes blends against. Computed once and
+   * cached alongside the grid so it survives without the raw section arrays.
+   */
+  structure?: TrackStructure | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -178,7 +208,22 @@ export type TransitionStyle =
   | "custom";
 
 /**
- * The concrete technique chosen for one specific pair of tracks. This is not
+ * The musical character of the move, as a DJ would name it. Chosen by the
+ * engine from the score band, the energy direction and the structural runway —
+ * independent of the user's style preference and of what the client can do.
+ */
+export type TransitionStrategy =
+  | "smooth"
+  | "dj"
+  | "fast"
+  | "long"
+  | "energy-rise"
+  | "energy-drop"
+  | "harmonic"
+  | "safe";
+
+/**
+ * The concrete mechanism chosen for one specific pair of tracks. This is not
  * the user's style preference — it is what the engine decided is achievable
  * and musically right here.
  */
@@ -199,14 +244,13 @@ export type ExecutorKind =
 export interface EqPlan {
   enabled: boolean;
   /**
-   * Simulated bass-swap. We cannot filter Spotify's audio, so this is expressed
-   * as a *gain* shaping intent that the volume-fade executor approximates and
-   * the debug panel reports honestly.
+   * Which gesture was wanted, not a set of gains — there is no per-band control
+   * anywhere in this environment, so dB figures here would be decoration.
+   * `front-loaded-fade` is the bass-swap approximation the fade executor can
+   * actually perform; `not-applicable` means the overlap path cannot act at all.
    */
-  bassDuckDb: number;
-  midHoldDb: number;
-  trebleBlendDb: number;
-  /** True when the executor can only approximate this with broadband gain. */
+  shaping: "none" | "front-loaded-fade" | "not-applicable";
+  /** Always true when enabled: nothing here is a real filter. */
   approximated: boolean;
 }
 
@@ -227,11 +271,25 @@ export interface TransitionPlan {
 
   technique: TransitionTechnique;
   executor: ExecutorKind;
+  /** The musical character the engine chose for this pair. */
+  strategy: TransitionStrategy;
+  /** PERFECT / EXCELLENT / GOOD / ACCEPTABLE / POOR. */
+  band: string;
   /** The user-facing style this plan was derived under. */
   style: TransitionStyle;
 
-  /** Seconds into track A where the transition begins. */
+  /**
+   * Seconds into track A at which the *switch itself* happens — the musical
+   * moment we chose, on a phrase boundary.
+   */
   startPointSec: number;
+  /**
+   * How long before `startPointSec` the executor has to begin work so that the
+   * switch lands on the moment above. Zero for the overlap path, where
+   * Spotify's mixer starts the blend at the switch; on the fade path it is the
+   * length of the fade-out, which otherwise pushes the switch off the phrase.
+   */
+  leadInSec: number;
   /** Length of the transition in seconds. */
   durationSec: number;
   /** Length expressed in beats of track A, when a beat grid exists. */
@@ -251,6 +309,16 @@ export interface TransitionPlan {
   beatAlignment: boolean;
   /** True when the transition begins on a phrase boundary of A. */
   phraseAlignment: boolean;
+  /**
+   * Seconds the switch was pulled earlier so the incoming track's first
+   * downbeat coincides with a downbeat of the outgoing one.
+   */
+  phaseOffsetSec: number;
+
+  /** Seconds of musically mixable overlap the two tracks' structures allow. */
+  mixableWindowSec: number;
+  /** Which side of the pair capped that window. */
+  windowLimitedBy: "outro" | "intro" | "both" | "unknown";
 
   eq: EqPlan;
   gain: GainPlan;

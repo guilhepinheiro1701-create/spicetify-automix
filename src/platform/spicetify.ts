@@ -150,6 +150,14 @@ function artistsOf(item: any): string[] {
   return single ? [String(single)] : [];
 }
 
+function providerOf(item: any): TrackRef["provider"] {
+  const raw = String(item?.provider ?? item?.contextTrack?.provider ?? "").toLowerCase();
+  if (raw === "queue") return "queue";
+  if (raw === "context") return "context";
+  if (raw.includes("autoplay") || raw.includes("suggest")) return "autoplay";
+  return "unknown";
+}
+
 export function toTrackRef(item: any): TrackRef | null {
   const uri: string | undefined = item?.uri ?? item?.contextTrack?.uri;
   if (!uri) return null;
@@ -167,6 +175,7 @@ export function toTrackRef(item: any): TrackRef | null {
     albumUri: item?.album?.uri ?? meta.album_uri ?? null,
     durationMs: Number.isFinite(durationMs) ? Number(durationMs) : 0,
     isLocal: Boolean(item?.isLocal) || uri.startsWith("spotify:local:"),
+    provider: providerOf(item),
   };
 }
 
@@ -317,6 +326,43 @@ export function notify(message: string, isError = false, timeoutMs = 2500): void
     sp()?.showNotification?.(message, isError, timeoutMs);
   } catch {
     /* ignore */
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Queue mutation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Whether this client exposes the queue mutation calls at all.
+ *
+ * `Spicetify.addToQueue` / `removeFromQueue` delegate to
+ * `Player.origin._queue`, which is internal and version-dependent.
+ */
+export function canMutateQueue(): boolean {
+  const s = sp();
+  return typeof s?.addToQueue === "function" && typeof s?.removeFromQueue === "function";
+}
+
+/** Append a track to the user queue. Resolves false rather than throwing. */
+export async function addToQueue(uri: string): Promise<boolean> {
+  try {
+    await sp()?.addToQueue?.([{ uri }]);
+    return true;
+  } catch (err) {
+    log.warn("addToQueue failed", err);
+    return false;
+  }
+}
+
+/** Remove a track from the user queue. Only works for user-queued entries. */
+export async function removeFromQueue(uri: string): Promise<boolean> {
+  try {
+    await sp()?.removeFromQueue?.([{ uri }]);
+    return true;
+  } catch (err) {
+    log.warn("removeFromQueue failed", err);
+    return false;
   }
 }
 

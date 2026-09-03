@@ -12,10 +12,12 @@ import { injectStyles } from "./styles.js";
 import { STYLE_PROFILES } from "../config/styles.js";
 import { camelotToString, toCamelot } from "../music/camelot.js";
 import { allCapabilities, statusIcon, type CapabilitySet } from "../platform/capabilities.js";
+import { describeStructure } from "../analysis/sections.js";
+import type { SetlistReport } from "../queue/setlist.js";
 import { DEFAULT_SETTINGS, type Settings } from "../config/defaults.js";
 import type { SettingsStore } from "../config/settings.js";
 import type { SmartDj } from "../runtime/smartDj.js";
-import type { TrackAnalysis, TransitionPlan } from "../core/types.js";
+import type { TrackAnalysis } from "../core/types.js";
 import type { MusicAnalyzer } from "../analysis/analyzer.js";
 
 declare const Spicetify: any;
@@ -27,6 +29,9 @@ export interface PanelDeps {
 }
 
 const pct = (v: number): string => `${Math.round(v * 100)}%`;
+
+const bandTone = (band: string): "ok" | "warn" | "bad" =>
+  band === "PERFECT" || band === "EXCELLENT" ? "ok" : band === "POOR" ? "bad" : "warn";
 
 function trackSummary(analysis: TrackAnalysis | null): string {
   if (!analysis) return "not analysed";
@@ -73,12 +78,17 @@ function statusSection(dj: SmartDj, analyzer: MusicAnalyzer): HTMLElement {
     ),
   );
 
-  const tone = c.overall >= 0.7 ? "ok" : c.overall >= 0.45 ? "warn" : "bad";
+  const tone = bandTone(plan.band);
   const header = el(
     "div",
     { class: "sdj__row" },
     el("span", { class: "sdj__label" }, "Compatibility"),
-    el("span", { class: "sdj__value" }, pct(c.overall)),
+    el(
+      "span",
+      { class: "sdj__value" },
+      `${pct(c.overall)} `,
+      badge(plan.band, tone),
+    ),
   );
 
   const breakdown = facts([
@@ -91,19 +101,51 @@ function statusSection(dj: SmartDj, analyzer: MusicAnalyzer): HTMLElement {
   ]);
 
   const planFacts = facts([
-    ["Technique", el("span", {}, plan.technique.replace(/-/g, " "), " ", badge(plan.executor.replace(/-/g, " "), tone))],
+    [
+      "Strategy",
+      el(
+        "span",
+        {},
+        plan.strategy.replace(/-/g, " ").toUpperCase(),
+        " ",
+        badge(plan.executor.replace(/-/g, " "), tone),
+      ),
+    ],
+    ["Technique", plan.technique.replace(/-/g, " ")],
     [
       "Length",
       plan.durationBeats
         ? `${plan.durationSec.toFixed(1)}s · ${plan.durationBeats} beats`
         : `${plan.durationSec.toFixed(1)}s`,
     ],
-    ["Starts at", `${plan.startPointSec.toFixed(1)}s`],
+    [
+      "Runway",
+      plan.windowLimitedBy === "unknown"
+        ? "unknown — using a tempo-derived length"
+        : `${plan.mixableWindowSec.toFixed(1)}s, limited by the ${plan.windowLimitedBy}`,
+    ],
+    [
+      "Switch at",
+      plan.leadInSec > 0
+        ? `${plan.startPointSec.toFixed(1)}s (fade starts ${plan.leadInSec.toFixed(1)}s earlier)`
+        : `${plan.startPointSec.toFixed(1)}s`,
+    ],
     [
       "Alignment",
-      [plan.phraseAlignment ? "phrase" : null, plan.beatAlignment ? "downbeat" : null]
+      [
+        plan.phraseAlignment ? "phrase" : null,
+        plan.beatAlignment
+          ? `downbeat${plan.phaseOffsetSec > 0.001 ? ` (−${(plan.phaseOffsetSec * 1000).toFixed(0)} ms)` : ""}`
+          : null,
+      ]
         .filter(Boolean)
         .join(" + ") || "none",
+    ],
+    [
+      "Structure",
+      `${fromAnalysis?.structure ? describeStructure(fromAnalysis.structure) : "A unknown"} → ${
+        toAnalysis?.structure ? describeStructure(toAnalysis.structure) : "B unknown"
+      }`,
     ],
     ["Status", status.phase + (status.etaSec !== null ? ` · in ${status.etaSec.toFixed(1)}s` : "")],
   ]);
@@ -122,6 +164,56 @@ function statusSection(dj: SmartDj, analyzer: MusicAnalyzer): HTMLElement {
   }
 
   return section("Current transition", ...children);
+}
+
+function setlistSection(report: SetlistReport | null): HTMLElement {
+  if (!report || report.links.length === 0) {
+    return section("Coming up", el("div", { class: "sdj__hint" }, "Nothing queued yet."));
+  }
+
+  const rows = el("div", { class: "sdj__facts" });
+  for (const link of report.links) {
+    const tone = bandTone(link.band.toUpperCase());
+    rows.append(
+      el(
+        "dt",
+        {},
+        `${link.index === 0 ? "next" : `+${link.index}`}`,
+      ),
+      el(
+        "dd",
+        {},
+        el("span", {}, `${link.from.name} → ${link.to.name} `),
+        badge(`${Math.round(link.score * 100)}%`, tone),
+      ),
+    );
+  }
+
+  const children: Node[] = [
+    el(
+      "div",
+      { class: "sdj__row" },
+      el("span", { class: "sdj__label" }, "Set flow"),
+      el("span", { class: "sdj__value" }, pct(report.flowScore)),
+    ),
+    meter(report.flowScore),
+    rows,
+  ];
+
+  if (report.weakLinks.length > 0) {
+    const worst = report.weakLinks[0] as SetlistReport["weakLinks"][number];
+    children.push(
+      el(
+        "div",
+        { class: "sdj__hint sdj__caveats" },
+        `Weakest link: ${worst.from.name} → ${worst.to.name} at ${Math.round(worst.score * 100)}%. ${report.reorderNote}.`,
+      ),
+    );
+  } else {
+    children.push(el("div", { class: "sdj__hint" }, report.reorderNote));
+  }
+
+  return section("Coming up", ...children);
 }
 
 function capabilitySection(caps: CapabilitySet | null): HTMLElement {
@@ -238,6 +330,9 @@ export function buildPanel(deps: PanelDeps): HTMLElement {
   // ── Live status ───────────────────────────────────────────────────────────
   root.append(statusSection(dj, analyzer));
 
+  // ── The chain, not just the next pair ────────────────────────────────────
+  root.append(setlistSection(dj.getSetlist()));
+
   // ── Capabilities ──────────────────────────────────────────────────────────
   root.append(capabilitySection(caps));
 
@@ -279,6 +374,26 @@ export function buildPanel(deps: PanelDeps): HTMLElement {
     ),
     toggleRow("Auto mode", "Let the engine size each transition itself.", s.autoMode, (v) =>
       settings.update({ autoMode: v }),
+    ),
+    sliderRow(
+      "Switch latency",
+      -300,
+      300,
+      10,
+      s.switchLatencyMs,
+      (v) => `${v} ms`,
+      (v) => settings.update({ switchLatencyMs: v }),
+    ),
+    el(
+      "div",
+      { class: "sdj__hint" },
+      "How long your client takes to actually change track. Not measurable from inside Spotify, so dial it in by ear if downbeat alignment sounds early or late.",
+    ),
+    toggleRow(
+      "Reorder the queue",
+      "Pull a better-matching track forward when the next transition would be poor. Only affects tracks you queued yourself — playlist order is never changed.",
+      s.queueReordering,
+      (v) => settings.update({ queueReordering: v }),
     ),
     toggleRow(
       "Skip dead intros",

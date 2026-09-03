@@ -223,8 +223,25 @@ export function scoreCompatibility(input: ScoringInput): CompatibilityReport {
     confidenceAcc += component.confidence * weight;
   }
 
-  const overall = totalWeight > 0 ? clamp01(weighted / totalWeight) : 0.5;
+  let overall = totalWeight > 0 ? clamp01(weighted / totalWeight) : 0.5;
   const confidence = totalWeight > 0 ? clamp01(confidenceAcc / totalWeight) : 0;
+
+  // A weighted mean is the wrong shape for a catastrophic failure in a hard
+  // constraint. Two tracks 50% apart in tempo do not become mixable because
+  // they happen to share a key and a loudness — and with no rate control here,
+  // that gap cannot be closed at all. So a badly failing constraint caps the
+  // result rather than being averaged against the ones that passed.
+  const vetoes: [ScoreComponent, number, number, number][] = [
+    // component, its weight, the score below which it vetoes, the resulting cap
+    [tempo, weights.tempo, 0.15, 0.5],
+    [key, weights.key, 0.2, 0.72],
+    [energy, weights.energy, 0.15, 0.7],
+  ];
+  for (const [component, weight, threshold, cap] of vetoes) {
+    if (weight > 0 && component.confidence > 0 && component.score < threshold) {
+      overall = Math.min(overall, cap);
+    }
+  }
 
   return {
     overall,

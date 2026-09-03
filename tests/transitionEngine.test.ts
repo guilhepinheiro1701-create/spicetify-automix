@@ -105,7 +105,10 @@ describe("technique selection", () => {
       to: { tempo: 145, key: 6, mode: 0, energy: 0.9 },
     });
     expect(["fade-cut", "quick-blend"]).toContain(p.technique);
-    expect(p.rationale.join(" ")).toMatch(/tempo|compatibility/i);
+    expect(p.strategy).toBe("safe");
+    expect(p.band).toBe("POOR");
+    // The reason has to name something the listener could act on, not a number.
+    expect(p.rationale.join(" ")).toMatch(/do not overlap|tempo|runway/i);
   });
 
   it("leaves an album segue completely alone", () => {
@@ -209,30 +212,84 @@ describe("strategy unit", () => {
     tempoDeltaPercent: -1.5,
   };
 
+  const strategyInput = (over: Record<string, unknown> = {}) => ({
+    compatibility: baseCompat,
+    capabilities: capabilities("dj"),
+    profile: { ...STYLE_PROFILES.dj, blendFloor: 0.2, compatibilitySensitivity: 0.8 },
+    hasBeatGrids: true,
+    sameAlbumConsecutive: false,
+    preserveAlbumGapless: true,
+    minCompatibilityForBlend: 0.2,
+    mixableWindowSec: 8,
+    windowLimitedBy: "both" as const,
+    fromStructure: null,
+    toStructure: null,
+    energyDelta: 0,
+    incomingIsAtypical: false,
+    ...over,
+  });
+
   it("honours the user's blend floor", () => {
-    const r = selectStrategy({
-      compatibility: { ...baseCompat, overall: 0.3 },
-      capabilities: capabilities("dj"),
-      profile: { ...STYLE_PROFILES.dj, blendFloor: 0.2, compatibilitySensitivity: 0.8 },
-      hasBeatGrids: true,
-      sameAlbumConsecutive: false,
-      preserveAlbumGapless: true,
-      minCompatibilityForBlend: 0.5,
-    });
+    const r = selectStrategy(
+      strategyInput({
+        compatibility: { ...baseCompat, overall: 0.3 },
+        minCompatibilityForBlend: 0.5,
+      }) as never,
+    );
     expect(r.technique).toBe("fade-cut");
+    expect(r.strategy).toBe("safe");
   });
 
   it("refuses to overlap two very different tempos even at a decent overall score", () => {
-    const r = selectStrategy({
-      compatibility: { ...baseCompat, overall: 0.65, tempoDeltaPercent: 30 },
-      capabilities: capabilities("dj"),
-      profile: { ...STYLE_PROFILES.dj, blendFloor: 0.2, compatibilitySensitivity: 0.8 },
-      hasBeatGrids: true,
-      sameAlbumConsecutive: false,
-      preserveAlbumGapless: true,
-      minCompatibilityForBlend: 0.2,
-    });
+    const r = selectStrategy(
+      strategyInput({
+        compatibility: { ...baseCompat, overall: 0.65, tempoDeltaPercent: 30 },
+      }) as never,
+    );
     expect(["quick-blend", "fade-cut"]).toContain(r.technique);
     expect(r.rationale.join(" ")).toMatch(/tempos differ/i);
+  });
+
+  it("keeps a short harmonic blend when the tempos clash but the keys agree", () => {
+    const r = selectStrategy(
+      strategyInput({
+        compatibility: {
+          ...baseCompat,
+          overall: 0.7,
+          tempoDeltaPercent: 30,
+          key: { score: 1, confidence: 0.9, detail: "same key" },
+        },
+      }) as never,
+    );
+    expect(r.strategy).toBe("harmonic");
+    expect(r.lengthFactor).toBeLessThan(1);
+  });
+
+  it("picks energy-rise when the incoming track is clearly hotter", () => {
+    const r = selectStrategy(strategyInput({ energyDelta: 0.2 }) as never);
+    expect(r.strategy).toBe("energy-rise");
+  });
+
+  it("picks energy-drop and lengthens when the incoming track settles", () => {
+    const r = selectStrategy(strategyInput({ energyDelta: -0.2 }) as never);
+    expect(r.strategy).toBe("energy-drop");
+    expect(r.lengthFactor).toBeGreaterThan(1);
+  });
+
+  it("picks long when there is a big runway and a top band", () => {
+    const r = selectStrategy(
+      strategyInput({
+        compatibility: { ...baseCompat, overall: 0.94 },
+        mixableWindowSec: 20,
+      }) as never,
+    );
+    expect(r.strategy).toBe("long");
+    expect(r.lengthFactor).toBeGreaterThan(1);
+  });
+
+  it("stands down to safe for spoken word or a live recording", () => {
+    const r = selectStrategy(strategyInput({ incomingIsAtypical: true }) as never);
+    expect(r.strategy).toBe("safe");
+    expect(r.rationale.join(" ")).toMatch(/spoken word|live recording/i);
   });
 });

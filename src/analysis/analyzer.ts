@@ -15,9 +15,11 @@ import { clamp01 } from "../core/util.js";
 import type { TrackAnalysis, TrackRef } from "../core/types.js";
 import { AnalysisCache, type CacheStorage } from "./cache.js";
 import { buildPhraseGrid } from "./structure.js";
+import { classifySections } from "./sections.js";
 import { HeuristicProvider } from "./providers/heuristic.js";
 import { ManualProvider, type TrackOverride } from "./providers/manual.js";
 import { SpotifyInternalProvider } from "./providers/spotifyInternal.js";
+import { SpotifyFeaturesProvider } from "./providers/spotifyFeatures.js";
 import { ExternalProvider, type ExternalConfig } from "./providers/external.js";
 import type { AnalysisProvider, ProviderHealth } from "./providers/types.js";
 
@@ -47,6 +49,12 @@ export function mergeAnalysis(base: TrackAnalysis, patch: TrackAnalysis): TrackA
       "pulseStrength",
       "endOfFadeIn",
       "startOfFadeOut",
+      "danceability",
+      "valence",
+      "acousticness",
+      "instrumentalness",
+      "speechiness",
+      "liveness",
     ] as (keyof TrackAnalysis)[]
   ).forEach(fill);
 
@@ -72,6 +80,7 @@ export class MusicAnalyzer {
   readonly cache: AnalysisCache;
   readonly manual: ManualProvider;
   readonly spotify: SpotifyInternalProvider;
+  readonly features: SpotifyFeaturesProvider;
   readonly external: ExternalProvider;
   private readonly heuristic: HeuristicProvider;
   private readonly chain: AnalysisProvider[];
@@ -83,9 +92,10 @@ export class MusicAnalyzer {
     this.cache = new AnalysisCache(options.storage);
     this.manual = new ManualProvider(options.storage);
     this.spotify = new SpotifyInternalProvider();
+    this.features = new SpotifyFeaturesProvider();
     this.external = new ExternalProvider();
     this.heuristic = new HeuristicProvider();
-    this.chain = [this.manual, this.spotify, this.external, this.heuristic];
+    this.chain = [this.manual, this.features, this.spotify, this.external, this.heuristic];
     for (const p of this.chain) {
       this.health.set(p.id, { id: p.id, attempts: 0, hits: 0, failures: 0, lastError: null });
     }
@@ -128,7 +138,8 @@ export class MusicAnalyzer {
     let result: TrackAnalysis | null = null;
 
     for (const provider of this.chain) {
-      // Once we have a tempo *and* a beat grid there is nothing left to gain.
+      // Only stop once we have both a tempo and a real beat grid: the features
+      // service supplies the former and never the latter.
       if (result?.tempo !== undefined && (result.beats?.length ?? 0) > 16) break;
       if (!provider.isAvailable() && provider.id !== "heuristic") continue;
 
@@ -152,11 +163,14 @@ export class MusicAnalyzer {
     // The heuristic provider cannot fail, so this is defensive only.
     const analysis = result ?? (await this.heuristic.fetch(track));
     analysis.grid = buildPhraseGrid(analysis);
+    analysis.structure = classifySections(analysis);
 
     this.cache.set(track.uri, analysis);
     log.debug(
       `analysed "${track.name}" via ${analysis.source} — ` +
         `${analysis.tempo ? `${analysis.tempo.toFixed(1)} BPM` : "no tempo"}, ` +
+        `${analysis.energy !== undefined ? `energy ${analysis.energy.toFixed(2)}, ` : ""}` +
+        `${analysis.structure?.known ? `intro ${analysis.structure.introRunwaySec.toFixed(0)}s / outro ${analysis.structure.outroRunwaySec.toFixed(0)}s, ` : ""}` +
         `confidence ${analysis.confidence.toFixed(2)}`,
     );
     return analysis;

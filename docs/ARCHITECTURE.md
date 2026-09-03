@@ -8,7 +8,7 @@ modal, so it reads as part of the client rather than beside it.
 
 The code splits into layers that only talk downward. The engine has no idea
 Spotify exists; the platform layer has no idea what a Camelot code is. That is
-what makes the algorithm testable without a Spotify client — 199 unit tests run in
+what makes the algorithm testable without a Spotify client — 239 unit tests run in
 Node with no browser and no mocking of Spicetify, and `npm run smoke` boots the
 real bundle against a stubbed client to cover the layers that are not pure.
 
@@ -39,15 +39,18 @@ src/
 │   └── loudness.ts             level matching and gain trim
 │
 ├── analysis/
-│   ├── providers/              manual → spotify-internal → external → heuristic
-│   ├── features.ts             derives energy/brightness/pulse from segments
-│   ├── structure.ts            phrase grid, exit cue, entry cue
+│   ├── providers/              manual → features → analysis → external → heuristic
+│   │   └── internalEndpoint.ts shared failure policy for the spclient services
+│   ├── features.ts             derives energy/brightness/pulse when Spotify's own are absent
+│   ├── sections.ts             intro/build/drop/breakdown/outro + runway
+│   ├── structure.ts            phrase grid, cue points, phase offset
 │   ├── cache.ts                memory LRU + compact persistent tier
 │   └── analyzer.ts             orchestration, merging, dedup, prefetch
 │
 ├── engine/                     pure computation: analyses in, plan out
-│   ├── scoring.ts              weighted compatibility model
-│   ├── strategy.ts             which technique, and why
+│   ├── bands.ts                PERFECT…POOR, and what each permits
+│   ├── scoring.ts              weighted model with hard-constraint caps
+│   ├── strategy.ts             eight characters, and the mechanism for each
 │   └── transitionEngine.ts     calculateTransition(A, B) → TransitionPlan
 │
 ├── audio/                      the only code that changes playback
@@ -56,7 +59,7 @@ src/
 │   └── audioEngine.ts          the fallback ladder
 │
 ├── queue/
-│   └── queueIntelligence.ts    lookahead, prefetch, ranking
+│   └── setlist.ts              A→B→C→D→E chain scoring, weak links, opt-in reorder
 │
 ├── runtime/
 │   ├── scheduler.ts            two-stage, self-correcting firing
@@ -79,17 +82,19 @@ songchange
     │                                │
     ▼                                │
 calculateTransition ◄────────────────┘
-    │   score the pair at a provisional geometry
-    │   pick the technique (or refuse)
-    │   size the blend, snap it to whole bars
-    │   pick the exit cue, snap it to a downbeat
+    │   classify both structures → mixable runway
+    │   score the pair; hard failures cap rather than average
+    │   band + energy direction + runway → strategy and mechanism
+    │   size the blend from the runway, align to whole phrases
+    │   pick the exit cue, snap it to a phrase line
+    │   pull the trigger early by B's own grid phase
     │   pick the entry cue in track B
     │   re-score at the final geometry
     ▼
 TransitionPlan
     │
     ▼
-scheduler.arm(startPoint)
+scheduler.arm(startPoint − leadIn)
     │   coarse poll ──► fine self-correcting chain ──► fire
     ▼
 audioEngine.execute(plan)

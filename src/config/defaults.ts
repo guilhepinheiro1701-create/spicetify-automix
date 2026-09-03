@@ -25,8 +25,22 @@ export interface Settings {
   /** Let the engine pick duration/technique instead of forcing the slider value. */
   autoMode: boolean;
 
+  /**
+   * Allow Smart DJ to pull a better-matching track forward in the queue when
+   * the next transition would be poor. Off by default: it changes playback
+   * order, and only user-queued entries can be moved at all.
+   */
+  queueReordering: boolean;
+
   /** Below this compatibility the engine refuses to blend and cuts cleanly. */
   minCompatibilityForBlend: number;
+
+  /**
+   * Milliseconds between calling for the track change and the audio actually
+   * switching. Not measurable from inside the client, so it is yours to dial in
+   * by ear if downbeat alignment sounds early or late.
+   */
+  switchLatencyMs: number;
   fadeCurve: FadeCurve;
 
   /** Opt-in third-party analysis provider. Off by default: see PRIVACY in the README. */
@@ -56,8 +70,10 @@ export const DEFAULT_SETTINGS: Settings = {
   skipDeadIntro: true,
   preserveAlbumGapless: true,
   autoMode: true,
+  queueReordering: false,
 
   minCompatibilityForBlend: 0.35,
+  switchLatencyMs: 0,
   fadeCurve: "equal-power",
 
   externalProviderEnabled: false,

@@ -85,7 +85,7 @@ function payload(bpm, key, mode, durationSec, loudness) {
   };
 }
 
-function stubSpicetify({ crossfadeWritable, productType, a, b, io }) {
+function stubSpicetify({ crossfadeWritable, productType, a, b, io, featuresFor }) {
   const configApi = crossfadeWritable
     ? {
         _s: {},
@@ -115,7 +115,21 @@ function stubSpicetify({ crossfadeWritable, productType, a, b, io }) {
       ...(configApi ? { ConfigAPI: configApi } : {}),
       UserAPI: { _product_state: { getValues: async () => ({ pairs: { type: productType } }) } },
     },
-    CosmosAsync: { get: async () => ({}), post: reject, put: reject },
+    CosmosAsync: {
+      // The internal audio-features service, which is what supplies Spotify's
+      // real energy/valence rather than our derived proxies.
+      get: async (url) => {
+        const m = /audio-features\/([A-Za-z0-9]+)/.exec(String(url));
+        if (m && featuresFor) {
+          const f = featuresFor(m[1]);
+          if (f) return f;
+          throw new Error("404 no features");
+        }
+        return {};
+      },
+      post: reject,
+      put: reject,
+    },
     Queue: { nextTracks: [b.track], prevTracks: [], queueRevision: "1", track: a.track },
     URI: { Type: { TRACK: "track" }, from: (u) => ({ Type: "track", getBase62Id: () => u.split(":")[2] }) },
     LocalStorage: {
@@ -126,15 +140,24 @@ function stubSpicetify({ crossfadeWritable, productType, a, b, io }) {
     PopupModal: { display: () => {} },
     showNotification: () => {},
     getAudioData: async (uri) => (uri === a.track.uri ? a.analysis : b.analysis),
+    addToQueue: async (items) => { io.queueAdds.push(items[0].uri); },
+    removeFromQueue: async (items) => { io.queueRemoves.push(items[0].uri); },
   };
 }
 
-const mkTrack = (id, name, albumId, durationMs) => ({
-  uri: `spotify:track:${String(id).repeat(22).slice(0, 22)}`,
-  name, artists: [{ name: `Artist ${id}` }],
-  album: { uri: `spotify:album:${albumId}` },
-  duration: { milliseconds: durationMs }, metadata: {},
-});
+const mkTrack = (id, name, albumId, durationMs, provider = "context") => {
+  const base62 = String(id).repeat(22).slice(0, 22);
+  return {
+    uri: `spotify:track:${base62}`,
+    id: base62,
+    name,
+    artists: [{ name: `Artist ${id}` }],
+    album: { uri: `spotify:album:${albumId}` },
+    duration: { milliseconds: durationMs },
+    provider,
+    metadata: {},
+  };
+};
 
 async function boot() {
   new Function(readFileSync(BUNDLE, "utf8"))();
@@ -148,12 +171,24 @@ async function boot() {
 async function scenarioOverlap() {
   console.log("\nScenario 1 — writable crossfade, well-matched pair");
   stubDom();
-  const io = { volume: 0.8, volumeTrace: [], position: 0, nextCalls: 0, seekedTo: null };
+  const io = { volume: 0.8, volumeTrace: [], position: 0, nextCalls: 0, seekedTo: null, queueAdds: [], queueRemoves: [] };
+  const trackA = mkTrack(1, "Track A", "1", 240000);
+  const trackB = mkTrack(2, "Track B", "2", 210000);
   stubSpicetify({
     crossfadeWritable: true,
     productType: "premium",
-    a: { track: mkTrack(1, "Track A", "1", 240000), analysis: payload(128, 9, 0, 240, -6.5) },
-    b: { track: mkTrack(2, "Track B", "2", 210000), analysis: payload(126, 9, 0, 210, -6.5) },
+    a: { track: trackA, analysis: payload(128, 9, 0, 240, -6.5) },
+    b: { track: trackB, analysis: payload(126, 9, 0, 210, -6.5) },
+    featuresFor: (id) => ({
+      tempo: id === trackA.id ? 128 : 126,
+      key: 9,
+      mode: 0,
+      energy: id === trackA.id ? 0.81 : 0.79,
+      danceability: 0.72,
+      valence: 0.55,
+      loudness: -6.5,
+      time_signature: 4,
+    }),
     io,
   });
 
@@ -177,6 +212,35 @@ async function scenarioOverlap() {
   check(plan.startPointSec < 240, "exits before the end of the track");
   check(plan.bpmAdjustmentApplied === false, "never claims to have applied a tempo change");
 
+  // Phase 2 behaviour.
+  const fromAnalysis = api.analyzer.peek(plan.from.uri);
+  check(
+    fromAnalysis?.energy === 0.81,
+    `uses Spotify's real energy from audio-features (got ${fromAnalysis?.energy})`,
+  );
+  check(
+    fromAnalysis?.valence === 0.55 && fromAnalysis?.danceability === 0.72,
+    "picks up valence and danceability too",
+  );
+  check(
+    Boolean(fromAnalysis?.structure?.known),
+    "classifies the track's structure (intro/body/outro)",
+  );
+  check(
+    plan.windowLimitedBy !== "unknown" && plan.mixableWindowSec > 0,
+    `sizes the blend from the structural runway (${plan.mixableWindowSec}s, limited by the ${plan.windowLimitedBy})`,
+  );
+  check(["PERFECT", "EXCELLENT", "GOOD"].includes(plan.band), `band is ${plan.band}`);
+  check(typeof plan.strategy === "string" && plan.strategy.length > 0, `strategy is ${plan.strategy}`);
+  check(plan.leadInSec === 0, "overlap path needs no lead-in");
+  check(
+    plan.eq.shaping === "not-applicable" || !plan.eq.enabled,
+    "does not pretend EQ shaping applies during a native crossfade",
+  );
+
+  const setlist = api.dj.getSetlist();
+  check(Boolean(setlist) && setlist.links.length > 0, "reports the upcoming chain");
+
   api.teardown();
 }
 
@@ -185,7 +249,7 @@ async function scenarioFallback() {
   console.log("\nScenario 2 — no crossfade write path, incompatible pair");
   stubDom();
   const START_VOLUME = 0.73;
-  const io = { volume: START_VOLUME, volumeTrace: [], position: 0, nextCalls: 0, seekedTo: null };
+  const io = { volume: START_VOLUME, volumeTrace: [], position: 0, nextCalls: 0, seekedTo: null, queueAdds: [], queueRemoves: [] };
   stubSpicetify({
     crossfadeWritable: false,
     productType: "free",
@@ -227,6 +291,7 @@ async function scenarioFallback() {
     io.volumeTrace.every((v) => v >= 0 && v <= 1),
     "volume never left the 0..1 range",
   );
+  check(plan.leadInSec > 0, `leads in ${plan.leadInSec}s so the switch lands on the phrase`);
 
   api.teardown();
 }
@@ -235,7 +300,7 @@ async function scenarioFallback() {
 async function scenarioAlbumSegue() {
   console.log("\nScenario 3 — consecutive tracks from one album");
   stubDom();
-  const io = { volume: 0.8, volumeTrace: [], position: 0, nextCalls: 0, seekedTo: null };
+  const io = { volume: 0.8, volumeTrace: [], position: 0, nextCalls: 0, seekedTo: null, queueAdds: [], queueRemoves: [] };
   stubSpicetify({
     crossfadeWritable: true,
     productType: "premium",
@@ -256,10 +321,40 @@ async function scenarioAlbumSegue() {
   api.teardown();
 }
 
+// ── Scenario 4 — the queue is left alone unless asked ─────────────────────
+async function scenarioQueueSafety() {
+  console.log("\nScenario 4 — queue reordering is opt-in");
+  stubDom();
+  const io = { volume: 0.8, volumeTrace: [], position: 0, nextCalls: 0, seekedTo: null, queueAdds: [], queueRemoves: [] };
+  stubSpicetify({
+    crossfadeWritable: true,
+    productType: "premium",
+    a: { track: mkTrack(1, "Now", "1", 240000), analysis: payload(128, 9, 0, 240, -7) },
+    b: { track: mkTrack(2, "Clash", "2", 200000, "queue"), analysis: payload(84, 6, 1, 200, -14) },
+    io,
+  });
+
+  const api = await boot();
+  await api.replan();
+
+  check(io.queueRemoves.length === 0, "did not touch the queue with reordering off");
+  check(io.queueAdds.length === 0, "did not add anything to the queue");
+
+  const setlist = api.dj.getSetlist();
+  check(Boolean(setlist), "still analysed the chain");
+  check(
+    setlist.links[0].score < 0.65,
+    `flagged the weak upcoming transition (${Math.round(setlist.links[0].score * 100)}%)`,
+  );
+
+  api.teardown();
+}
+
 console.log("Smart DJ — integration smoke test");
 await scenarioOverlap();
 await scenarioFallback();
 await scenarioAlbumSegue();
+await scenarioQueueSafety();
 
 console.log(
   failures.length === 0

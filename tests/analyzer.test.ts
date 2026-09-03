@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MusicAnalyzer } from "../src/analysis/analyzer.js";
-import { QueueIntelligence, quickScore } from "../src/queue/queueIntelligence.js";
+import { SetlistPlanner, linkScore } from "../src/queue/setlist.js";
 import { ManualProvider } from "../src/analysis/providers/manual.js";
 import { ExternalProvider } from "../src/analysis/providers/external.js";
 import { analysis, memoryStorage, track } from "./helpers.js";
@@ -148,39 +148,101 @@ describe("ExternalProvider", () => {
   });
 });
 
-describe("QueueIntelligence", () => {
-  it("ranks the queue and spots a better option further down", async () => {
+describe("SetlistPlanner", () => {
+  it("scores the chain and finds the weak link", async () => {
     const analyzer = new MusicAnalyzer({ storage: memoryStorage() });
-    const current = analysis({ tempo: 128, key: 9, mode: 0, energy: 0.8 });
+    const a = track({ uri: "spotify:track:s0", name: "A" });
+    const b = track({ uri: "spotify:track:s1", name: "B" });
+    const c = track({ uri: "spotify:track:s2", name: "C" });
 
-    const bad = track({ uri: "spotify:track:q1", name: "Clash" });
-    const good = track({ uri: "spotify:track:q2", name: "Perfect" });
-    analyzer.setOverride(bad.uri, { tempo: 90, key: 6, mode: 1, energy: 0.2 });
+    analyzer.setOverride(a.uri, { tempo: 128, key: 9, mode: 0, energy: 0.8 });
+    analyzer.setOverride(b.uri, { tempo: 127, key: 9, mode: 0, energy: 0.82 });
+    analyzer.setOverride(c.uri, { tempo: 85, key: 6, mode: 1, energy: 0.25 });
+
+    const aAnalysis = (await analyzer.analyze(a))!;
+    const report = await new SetlistPlanner(analyzer).report(a, aAnalysis, [b, c]);
+
+    expect(report.chain).toHaveLength(3);
+    expect(report.links).toHaveLength(2);
+    // A→B is strong, B→C is the problem.
+    expect(report.links[0]!.score).toBeGreaterThan(0.85);
+    expect(report.links[1]!.score).toBeLessThan(0.45);
+    expect(report.weakLinks[0]!.index).toBe(1);
+    expect(report.flowScore).toBeGreaterThan(0);
+    expect(report.flowScore).toBeLessThan(1);
+  });
+
+  it("reports honestly that context tracks cannot be reordered", async () => {
+    const analyzer = new MusicAnalyzer({ storage: memoryStorage() });
+    const a = track({ uri: "spotify:track:s0" });
+    const b = track({ uri: "spotify:track:s1", provider: "context" });
+    const aAnalysis = (await analyzer.analyze(a))!;
+    const report = await new SetlistPlanner(analyzer).report(a, aAnalysis, [b]);
+
+    expect(report.reorderable).toBe(false);
+    expect(report.reorderNote).toMatch(/playing context|cannot reorder/i);
+  });
+
+  it("proposes promoting a user-queued track over a poor next transition", async () => {
+    const analyzer = new MusicAnalyzer({ storage: memoryStorage() });
+    const a = track({ uri: "spotify:track:s0", name: "Now" });
+    const bad = track({ uri: "spotify:track:s1", name: "Clash", provider: "queue" });
+    const good = track({ uri: "spotify:track:s2", name: "Fits", provider: "queue" });
+
+    analyzer.setOverride(a.uri, { tempo: 128, key: 9, mode: 0, energy: 0.8 });
+    analyzer.setOverride(bad.uri, { tempo: 82, key: 6, mode: 1, energy: 0.2 });
     analyzer.setOverride(good.uri, { tempo: 128, key: 9, mode: 0, energy: 0.83 });
 
-    const report = await new QueueIntelligence(analyzer).report(current, [bad, good]);
-    expect(report.candidates).toHaveLength(2);
-    expect(report.best!.track.uri).toBe(good.uri);
-    expect(report.betterOptionAvailable).toBe(true);
+    const planner = new SetlistPlanner(analyzer);
+    const aAnalysis = (await analyzer.analyze(a))!;
+    const report = await planner.report(a, aAnalysis, [bad, good]);
+    expect(report.reorderable).toBe(true);
+
+    const proposal = await planner.proposeReorder(report);
+    expect(proposal).not.toBeNull();
+    expect(proposal!.promote.uri).toBe(good.uri);
+    expect(proposal!.proposedScore).toBeGreaterThan(proposal!.currentScore + 0.15);
   });
 
-  it("returns an empty report with nothing queued", async () => {
+  it("proposes nothing when the next transition is already good", async () => {
     const analyzer = new MusicAnalyzer({ storage: memoryStorage() });
-    const report = await new QueueIntelligence(analyzer).report(analysis(), []);
-    expect(report.candidates).toEqual([]);
-    expect(report.best).toBeNull();
-    expect(report.betterOptionAvailable).toBe(false);
+    const a = track({ uri: "spotify:track:s0" });
+    const b = track({ uri: "spotify:track:s1", provider: "queue" });
+    const c = track({ uri: "spotify:track:s2", provider: "queue" });
+    analyzer.setOverride(a.uri, { tempo: 128, key: 9, mode: 0, energy: 0.8 });
+    analyzer.setOverride(b.uri, { tempo: 128, key: 9, mode: 0, energy: 0.82 });
+    analyzer.setOverride(c.uri, { tempo: 128, key: 9, mode: 0, energy: 0.84 });
+
+    const planner = new SetlistPlanner(analyzer);
+    const aAnalysis = (await analyzer.analyze(a))!;
+    const report = await planner.report(a, aAnalysis, [b, c]);
+    expect(await planner.proposeReorder(report)).toBeNull();
   });
 
-  it("quickScore stays in range for every extreme", () => {
+  it("never promotes a context track, even when it would mix better", async () => {
+    const analyzer = new MusicAnalyzer({ storage: memoryStorage() });
+    const a = track({ uri: "spotify:track:s0" });
+    const bad = track({ uri: "spotify:track:s1", provider: "queue" });
+    const goodButContext = track({ uri: "spotify:track:s2", provider: "context" });
+    analyzer.setOverride(a.uri, { tempo: 128, key: 9, mode: 0, energy: 0.8 });
+    analyzer.setOverride(bad.uri, { tempo: 82, key: 6, mode: 1, energy: 0.2 });
+    analyzer.setOverride(goodButContext.uri, { tempo: 128, key: 9, mode: 0, energy: 0.82 });
+
+    const planner = new SetlistPlanner(analyzer);
+    const aAnalysis = (await analyzer.analyze(a))!;
+    const report = await planner.report(a, aAnalysis, [bad, goodButContext]);
+    expect(await planner.proposeReorder(report)).toBeNull();
+  });
+
+  it("linkScore stays in range for every extreme", () => {
     const pairs = [
       [analysis({ tempo: 60, key: 0, mode: 1, energy: 0 }), analysis({ tempo: 180, key: 6, mode: 0, energy: 1 })],
       [analysis({ tempo: 128 }), analysis({ tempo: 128 })],
     ] as const;
-    for (const [a, b] of pairs) {
-      const s = quickScore(a, b);
-      expect(s).toBeGreaterThanOrEqual(0);
-      expect(s).toBeLessThanOrEqual(1);
+    for (const [x, y] of pairs) {
+      const v = linkScore(x, y);
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(1);
     }
   });
 });

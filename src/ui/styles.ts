@@ -119,7 +119,7 @@ export const PANEL_STYLES = `
 /* Debug HUD */
 .sdj-hud {
   position: fixed; right: 16px; bottom: 96px; z-index: 9999;
-  width: 268px; padding: 12px 14px; border-radius: 8px;
+  width: 300px; padding: 12px 14px; border-radius: 8px;
   background: rgba(10,10,10,.92); border: 1px solid rgba(255,255,255,.12);
   backdrop-filter: blur(12px);
   font-family: 'SFMono-Regular', ui-monospace, Menlo, Consolas, monospace;
@@ -130,7 +130,7 @@ export const PANEL_STYLES = `
   margin: 0 0 8px; font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
   color: #1ed760; font-family: var(--font-family, sans-serif);
 }
-.sdj-hud dl { display: grid; grid-template-columns: 68px 1fr; gap: 1px 8px; margin: 0; }
+.sdj-hud dl { display: grid; grid-template-columns: 74px 1fr; gap: 1px 8px; margin: 0; }
 .sdj-hud dt { color: #8a8a8a; }
 .sdj-hud dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sdj-hud__bar { height: 3px; margin-top: 8px; border-radius: 2px; background: #303030; overflow: hidden; }

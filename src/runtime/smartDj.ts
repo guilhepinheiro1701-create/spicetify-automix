@@ -16,7 +16,7 @@ import { Emitter } from "../core/events.js";
 import { calculateTransition } from "../engine/transitionEngine.js";
 import { AudioEngine } from "../audio/audioEngine.js";
 import { TransitionScheduler } from "./scheduler.js";
-import { QueueIntelligence } from "../queue/queueIntelligence.js";
+import { SetlistPlanner, type SetlistReport } from "../queue/setlist.js";
 import * as player from "../platform/spicetify.js";
 import { probeCapabilities, type CapabilitySet } from "../platform/capabilities.js";
 import { setNativeCrossfade, getCrossfadeState } from "../platform/nativeCrossfade.js";
@@ -34,12 +34,13 @@ const MIN_PLAYED_SEC = 5;
 export interface SmartDjEvents extends Record<string, unknown> {
   status: TransitionStatus;
   plan: { plan: TransitionPlan | null };
+  setlist: { report: SetlistReport };
 }
 
 export class SmartDj {
   readonly events = new Emitter<SmartDjEvents>();
   readonly audio = new AudioEngine();
-  readonly queue: QueueIntelligence;
+  readonly setlist: SetlistPlanner;
 
   private scheduler: TransitionScheduler;
   private capabilities: CapabilitySet | null = null;
@@ -67,12 +68,17 @@ export class SmartDj {
   private originalCrossfade: { enabled: boolean; durationSec: number } | null = null;
   private planToken = 0;
   private started = false;
+  private lastSetlist: SetlistReport | null = null;
+  /** Reorders performed for the currently playing track, to bound the replan loop. */
+  private reordersThisTrack = 0;
+  /** URIs we have already promoted, so we never shuffle the same track twice. */
+  private promoted = new Set<string>();
 
   constructor(
     private readonly analyzer: MusicAnalyzer,
     private readonly settings: SettingsStore,
   ) {
-    this.queue = new QueueIntelligence(analyzer);
+    this.setlist = new SetlistPlanner(analyzer);
     this.scheduler = new TransitionScheduler({
       position: () => player.getProgressMs(),
       playing: () => player.isPlaying(),
@@ -91,6 +97,10 @@ export class SmartDj {
     return this.plan;
   }
 
+  getSetlist(): SetlistReport | null {
+    return this.lastSetlist;
+  }
+
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
@@ -104,29 +114,36 @@ export class SmartDj {
       player.on("onplaypause", () => this.onPlayPause()),
     );
 
-    this.settings.events.on("change", ({ changed }) => {
-      if (changed.includes("enabled")) {
-        if (this.settings.get().enabled) void this.refreshPlan();
-        else this.disarm("disabled by user");
-      } else {
-        void this.refreshPlan();
-      }
-    });
-
     this.analyzer.configureExternal({
       enabled: this.settings.get().externalProviderEnabled,
       url: this.settings.get().externalProviderUrl,
     });
-    this.settings.events.on("change", ({ settings }) => {
-      this.analyzer.configureExternal({
-        enabled: settings.externalProviderEnabled,
-        url: settings.externalProviderUrl,
-      });
-    });
 
-    this.audio.events.on("progress", ({ progress }) => {
-      this.setStatus({ phase: "transitioning", progress });
-    });
+    this.unsubscribers.push(
+      this.settings.events.on("change", ({ changed, settings }) => {
+        this.analyzer.configureExternal({
+          enabled: settings.externalProviderEnabled,
+          url: settings.externalProviderUrl,
+        });
+
+        if (changed.includes("enabled")) {
+          if (settings.enabled) {
+            void this.refreshPlan();
+          } else {
+            // Switching Smart DJ off during a transition has to stop the
+            // transition, not just prevent the next one — otherwise a volume
+            // ramp keeps running against a player the user just took back.
+            this.audio.abort("Smart DJ switched off");
+            this.disarm("disabled by user");
+          }
+          return;
+        }
+        void this.refreshPlan();
+      }),
+      this.audio.events.on("progress", ({ progress }) => {
+        this.setStatus({ phase: "transitioning", progress });
+      }),
+    );
 
     await this.onSongChange();
     log.info(`started — tier "${this.capabilities.tier}"`);
@@ -134,10 +151,20 @@ export class SmartDj {
 
   stop(): void {
     this.disarm("stopped");
+    this.audio.abort("stopped");
     for (const un of this.unsubscribers) un();
     this.unsubscribers = [];
     this.audio.dispose();
     this.restoreCrossfade();
+    // Leave nothing behind that a later start() would inherit.
+    this.plan = null;
+    this.lastSetlist = null;
+    this.currentTrack = null;
+    this.nextTrack = null;
+    this.handled.clear();
+    this.promoted.clear();
+    this.reordersThisTrack = 0;
+    this.planToken++;
     this.started = false;
     this.setStatus({ phase: "disabled", progress: 0, plan: null, etaSec: null });
   }
@@ -159,6 +186,7 @@ export class SmartDj {
     const track = player.getCurrentTrack();
     this.currentTrack = track;
     this.plan = null;
+    this.reordersThisTrack = 0;
     this.setStatus({ phase: "analyzing", progress: 0, plan: null, etaSec: null, lastError: null });
 
     if (!track) {
@@ -211,15 +239,33 @@ export class SmartDj {
       return;
     }
 
-    const upcoming = player.getUpcomingTracks(4);
+    const upcoming = player.getUpcomingTracks(5);
     this.nextTrack = upcoming[0] ?? null;
-    this.queue.prefetch(upcoming);
+    this.setlist.prefetch(upcoming);
 
     try {
       const fromAnalysis = await this.analyzer.analyze(from);
       const toAnalysis = this.nextTrack ? await this.analyzer.analyze(this.nextTrack) : null;
       if (token !== this.planToken) return; // superseded while we awaited
       if (!fromAnalysis) return;
+
+      // Look at the whole chain, not just the next pair. This is also where a
+      // poor upcoming transition gets a chance to be avoided rather than
+      // merely reported.
+      const report = await this.setlist.report(from, fromAnalysis, upcoming);
+      if (token !== this.planToken) return;
+      this.lastSetlist = report;
+      this.events.emit("setlist", { report });
+
+      if (settings.queueReordering && report.reorderable && this.reordersThisTrack < 2) {
+        const moved = await this.tryReorder(report);
+        if (moved) {
+          this.reordersThisTrack++;
+          // The queue changed underneath us; replan against the new next track.
+          void this.refreshPlan();
+          return;
+        }
+      }
 
       const plan = calculateTransition({
         fromTrack: from,
@@ -248,8 +294,63 @@ export class SmartDj {
     }
   }
 
+  /**
+   * Pull a better-matching user-queued track forward, when the next transition
+   * would be poor and the queue model actually allows the move.
+   *
+   * Deliberately conservative: it only ever promotes a track the user queued
+   * themselves, only when the improvement is large, and never the same track
+   * twice in one session.
+   */
+  private async tryReorder(report: SetlistReport): Promise<boolean> {
+    if (!player.canMutateQueue()) {
+      log.debug("queue reordering unavailable: this client exposes no queue mutation");
+      return false;
+    }
+    const proposal = await this.setlist.proposeReorder(report);
+    if (!proposal || this.promoted.has(proposal.promote.uri)) return false;
+
+    // Move it: take it out of its current slot, then put it back at the front.
+    const removed = await player.removeFromQueue(proposal.promote.uri);
+    if (!removed) {
+      log.debug("queue reordering declined by the client — leaving the order alone");
+      return false;
+    }
+    // From here the track is out of the queue. If we cannot put it back the user
+    // has silently lost it, so this retries and, failing that, says so out loud
+    // rather than swallowing the loss in a debug log.
+    let added = await player.addToQueue(proposal.promote.uri);
+    if (!added) {
+      await new Promise((r) => setTimeout(r, 150));
+      added = await player.addToQueue(proposal.promote.uri);
+    }
+    if (!added) {
+      log.error(
+        `could not re-queue "${proposal.promote.name}" after removing it — ` +
+          "disabling queue reordering to avoid losing anything else",
+      );
+      player.notify(
+        `Smart DJ could not re-queue "${proposal.promote.name}" — queue reordering turned off`,
+        true,
+        6000,
+      );
+      this.settings.update({ queueReordering: false });
+      return false;
+    }
+
+    this.promoted.add(proposal.promote.uri);
+    if (this.promoted.size > 100) this.promoted.clear();
+    log.info(`reordered the queue: ${proposal.reason}`);
+    if (this.settings.get().showNotifications) {
+      player.notify(`Smart DJ · moved "${proposal.promote.name}" up for a better mix`);
+    }
+    return true;
+  }
+
   private arm(plan: TransitionPlan): void {
-    const targetMs = plan.startPointSec * 1000;
+    // Fire the executor early enough that the *switch* lands on the musical
+    // moment, rather than the executor merely starting there.
+    const targetMs = (plan.startPointSec - plan.leadInSec) * 1000;
     const position = player.getProgressMs();
 
     if (targetMs <= position + 500) {
@@ -274,8 +375,10 @@ export class SmartDj {
       lastError: null,
     });
     log.debug(
-      `armed: ${plan.technique} in ${((targetMs - position) / 1000).toFixed(1)}s ` +
-        `(${plan.durationSec.toFixed(1)}s, ${(plan.compatibility.overall * 100).toFixed(0)}% match)`,
+      `armed: ${plan.strategy}/${plan.technique} in ${((targetMs - position) / 1000).toFixed(1)}s ` +
+        `— switch at ${plan.startPointSec.toFixed(1)}s` +
+        (plan.leadInSec > 0 ? ` (lead-in ${plan.leadInSec.toFixed(1)}s)` : "") +
+        `, ${plan.durationSec.toFixed(1)}s, ${plan.band} ${(plan.compatibility.overall * 100).toFixed(0)}%`,
     );
   }
 

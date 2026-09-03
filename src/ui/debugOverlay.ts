@@ -8,6 +8,7 @@
 
 import { injectStyles } from "./styles.js";
 import { camelotToString, toCamelot } from "../music/camelot.js";
+import { describeStructure } from "../analysis/sections.js";
 import type { MusicAnalyzer } from "../analysis/analyzer.js";
 import type { SmartDj } from "../runtime/smartDj.js";
 import type { TrackAnalysis } from "../core/types.js";
@@ -83,6 +84,11 @@ export class DebugOverlay {
           ? "sdj-hud__state sdj-hud__state--idle"
           : "sdj-hud__state sdj-hud__state--warn";
 
+    const setlist = this.dj.getSetlist();
+    const chain = setlist
+      ? setlist.links.map((l) => `${Math.round(l.score * 100)}`).join(" · ")
+      : "—";
+
     const rows: [string, string][] = [
       ["Current", plan?.from.name ?? "—"],
       ["Next", plan?.to?.name ?? "—"],
@@ -91,16 +97,36 @@ export class DebugOverlay {
       ["Energy", `${fmtEnergy(from)} → ${fmtEnergy(to)}`],
       [
         "Match",
-        plan ? `${Math.round(plan.compatibility.overall * 100)}% (conf ${Math.round(plan.compatibility.confidence * 100)}%)` : "—",
+        plan
+          ? `${Math.round(plan.compatibility.overall * 100)}% ${plan.band} (conf ${Math.round(plan.compatibility.confidence * 100)}%)`
+          : "—",
       ],
+      ["Strategy", plan ? plan.strategy.toUpperCase() : "—"],
       [
         "Plan",
         plan
           ? `${plan.technique} / ${plan.durationBeats ? `${plan.durationBeats} beats` : `${plan.durationSec.toFixed(1)}s`}`
           : "—",
       ],
+      [
+        "Runway",
+        plan
+          ? plan.windowLimitedBy === "unknown"
+            ? "unknown"
+            : `${plan.mixableWindowSec.toFixed(1)}s (${plan.windowLimitedBy})`
+          : "—",
+      ],
+      ["Structure", from?.structure ? describeStructure(from.structure) : "—"],
       ["Phrase", plan ? (plan.phraseAlignment ? "matched" : "free") : "—"],
-      ["Downbeat", plan ? (plan.beatAlignment ? "locked" : "no") : "—"],
+      [
+        "Downbeat",
+        plan
+          ? plan.beatAlignment
+            ? `locked −${(plan.phaseOffsetSec * 1000).toFixed(0)}ms`
+            : "no"
+          : "—",
+      ],
+      ["Chain", chain],
       ["Path", plan?.executor ?? caps?.tier ?? "—"],
       ["Source", from ? from.source : "—"],
       ["ETA", status.etaSec !== null ? `${status.etaSec.toFixed(1)}s` : "—"],
