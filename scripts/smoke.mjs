@@ -304,7 +304,13 @@ async function scenarioFallback() {
   console.log(`    → ${outcome.status}: ${outcome.note}`);
   check(outcome.status === "completed", "the fade executes");
   check(io.nextCalls === 1, `next() called exactly once (got ${io.nextCalls})`);
-  check(Math.min(...io.volumeTrace) < START_VOLUME * 0.2, "actually faded down");
+  // The dip masks the switch gap; it deliberately does not go to silence.
+  const dipBottom = Math.min(...io.volumeTrace);
+  check(dipBottom < START_VOLUME * 0.6, "the level actually dipped");
+  check(
+    dipBottom > START_VOLUME * 0.12,
+    `dipped to ${Math.round((dipBottom / START_VOLUME) * 100)}% rather than to silence`,
+  );
   check(
     Math.abs(io.volume - START_VOLUME) < 1e-6,
     `volume restored exactly (${io.volume} vs ${START_VOLUME})`,

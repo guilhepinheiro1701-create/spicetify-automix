@@ -22,7 +22,7 @@ import { VolumeController } from "./volumeController.js";
 import { NativeCrossfadeExecutor } from "./executors/nativeCrossfadeExecutor.js";
 import { VolumeFadeExecutor } from "./executors/volumeFadeExecutor.js";
 import { PassiveExecutor } from "./executors/passiveExecutor.js";
-import { TransitionLog, type TransitionRecord } from "../runtime/transitionLog.js";
+import { TransitionLog } from "../runtime/transitionLog.js";
 import type { ExecutionContext, ExecutionOutcome, TransitionExecutor } from "./executors/types.js";
 import type { TransitionPlan } from "../core/types.js";
 

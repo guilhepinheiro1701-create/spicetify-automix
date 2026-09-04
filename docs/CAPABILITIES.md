@@ -50,7 +50,7 @@ The flags collapse into one of three tiers:
 | Tier | Requires | Delivers |
 | --- | --- | --- |
 | **dj** | `crossfade` | real audio overlap, programmed per pair |
-| **fade** | `volumeControl` | a musically-timed, level-matched switch with no overlap |
+| **fade** | `volumeControl` | the **Phrase-Timed Fade**: a musically-timed, level-matched switch with no overlap |
 | **passive** | nothing | Spotify's own behaviour, untouched |
 
 ## Auto-degradation

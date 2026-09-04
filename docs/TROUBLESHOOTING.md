@@ -34,7 +34,7 @@ Even without the button, the panel is reachable from the console:
 SmartDJ.open()
 ```
 
-## It says "Fade mode — no audio overlap"
+## It says "Phrase-Timed Fade — no overlap here"
 
 This is the expected result on a Free account with a recent Spotify build:
 Spotify has moved the crossfade setting behind Premium, and Smart DJ drives that
@@ -44,10 +44,10 @@ setting to produce real overlap.
 songs". If that slider is not there, the capability genuinely is not available
 and no extension can create it.
 
-If the slider *is* there and Smart DJ still says fade mode, open the panel's
+If the slider *is* there and Smart DJ still reports no overlap, open the panel's
 Compatibility section — it names which write path was tried and refused.
 
-Fade mode is still doing real work: the switch lands on a phrase boundary,
+The fade path is still doing real work: the switch lands on a phrase boundary,
 levels are matched, and dead intros can be skipped (something the overlap path
 cannot do). It is a well-timed switch rather than a mix.
 

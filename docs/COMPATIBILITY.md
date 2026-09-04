@@ -95,7 +95,8 @@ SmartDJ.dj.diagnostics.snapshot().degraded
 
 Community reports through 2026 indicate recent desktop builds moved the
 crossfade setting behind Premium. Since Smart DJ produces overlap by driving
-that setting, Free accounts on those builds run in **fade mode**. That path got
+that setting, Free accounts on those builds get the **Phrase-Timed Fade** path.
+That path got
 specific attention in Phase 2 and is genuinely good — see
 [LIMITATIONS.md](LIMITATIONS.md) — but it is not an overlap and is never
 described as one.

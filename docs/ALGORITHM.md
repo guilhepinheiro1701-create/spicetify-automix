@@ -284,6 +284,22 @@ the musical character, and it is what the debug panel names:
 | `SMOOTH` | the workable middle | ×1.0 |
 | `SAFE` | poor band, album segue, spoken word, live recording, or no client capability | ×0.6 or nothing at all |
 
+### The harmonic cap
+
+Two keys can only beat against each other while both are audible. A clash
+therefore caps the **overlap** — half a phrase instead of a whole one — and
+leaves the cut path untouched, where the tonalities never sound together at all.
+
+The threshold is 0.45 on the Camelot score, read off the table rather than
+chosen by taste: it passes the ±2 energy moves (0.55–0.62) and an *unknown* key
+(0.5, which must never be punished), and catches diagonal (0.42) and distant
+(≤0.34).
+
+Without it, key reached length only through the overall band, and a weighted
+average is too forgiving to act on the rule stated in §3: a tritone pair scoring
+GOOD overall was getting exactly the same sixteen-beat overlap as a perfect
+match. The plan says so in its rationale rather than shortening silently.
+
 ## 8. Sizing the blend
 
 Runway first, tempo second:
@@ -293,7 +309,8 @@ Runway first, tempo second:
 2. ceiling  = max(style.min, window × band.windowUsage)
 3. desired  = base(technique) × intensity × strategy.lengthFactor × style.bias
 4. hardMax  = min(style.max × band.windowUsage, style.max, user.max,
-                  12s on the overlap path, track × 0.2)
+                  12s on the overlap path, track × 0.2,
+                  8 beats when the keys clash *and* we are overlapping)
 5. duration = clamp(desired, lower, min(ceiling, hardMax))
 6. align onto the grid, allowed 12% overshoot of the *structural* ceiling only
 ```

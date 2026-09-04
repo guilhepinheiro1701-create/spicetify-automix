@@ -108,7 +108,7 @@ your actual client.
 The full investigation, with sources, is in
 [`docs/RESEARCH.md`](docs/RESEARCH.md).
 
-### Fade mode is a cut, not a mix
+### "Phrase-Timed Fade" is a cut, not a mix
 
 Where no overlap is available, Smart DJ does **not** perform a long crossfade
 with the volume — that would cost several seconds of music to hide a switch gap
@@ -120,14 +120,15 @@ roughly a third of your setting rather than to silence, the switch lands on the
 phrase boundary, and the level comes back over about a bar. The dip exists to
 mask the client's gap. The transition is the *timing*, not the fade.
 
-The UI calls this a fade, never a mix.
+The UI calls it a **Phrase-Timed Fade**. It is not a DJ mix, and nothing in the
+product calls it one.
 
 ### A note for Spotify Free
 
 The brief for this project was Spotify Free, and this is the honest position:
 recent desktop builds appear to have moved the crossfade setting behind Premium.
 Smart DJ probes for it at startup. If it can drive the mixer, you get real
-overlap. If it cannot, it says so plainly in the panel and runs in **fade mode**:
+overlap. If it cannot, it says so plainly in the panel and runs as a **Phrase-Timed Fade**:
 the switch is still placed on a phrase boundary, still level-matched, still able
 to skip a dead intro — there is simply no overlap, because none is available.
 
@@ -315,10 +316,11 @@ leaves your machine.
 
 ## Troubleshooting
 
-**The panel says "fade mode" / no audio overlap.**
+**The panel says "Phrase-Timed Fade" / no overlap.**
 The client rejected every crossfade write path. Check Settings → Playback →
 Crossfade exists for your account; if it does not, this is the Premium gate and
-fade mode is what is available. Smart DJ still times and shapes the switch.
+the phrase-timed fade is what is available. Smart DJ still times and shapes the
+switch.
 
 **BPM and key show as `?`.**
 The internal analysis service has no data for that track — common for local
@@ -350,11 +352,12 @@ Confirm `spicetify config extensions` lists `smart-dj.js`, re-run
 npm run build       # bundle to dist/smart-dj.js
 npm run watch       # rebuild on change
 npm run typecheck   # tsc --noEmit
-npm test            # 297 unit tests
+npm test            # 312 unit tests
 npm run smoke       # boot the built bundle against a stubbed client
 npm run playback    # a real-time session against a Spotify simulator
 npm run timing      # where the switch lands against the beat grid
 npm run verify      # all of the above
+npm run situations  # the sixteen named situations, with a verdict each
 ```
 
 The engine is pure: `calculateTransition(analyses, settings, capabilities)`
@@ -368,6 +371,12 @@ response to our own `next()` — the behaviour that neither the unit nor the smo
 suite modelled, and which was hiding a bug that cancelled every transition
 halfway through. It asserts the volume comes back to exactly where the user had
 it, in every interruption case.
+
+`npm run situations` answers the sixteen situations the product was challenged
+with — genre pairs, tempo extremes, key clashes, and every way a listener can
+interrupt a transition — printing what was expected, what happened, and a
+verdict for each. It takes a few minutes, because the sessions run at
+wall-clock speed on purpose.
 
 `npm run smoke` covers what the unit tests cannot: it loads the real bundle
 against a stubbed Spotify client and checks four end-to-end scenarios — a

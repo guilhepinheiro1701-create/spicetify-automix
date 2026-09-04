@@ -1,11 +1,13 @@
 # Testing
 
 ```bash
-npm run verify   # typecheck → unit tests → build → smoke
+npm run verify      # typecheck → unit tests → build → smoke → playback
+npm run situations  # the sixteen named situations, one at a time (a few minutes)
+npm run timing      # where the switch lands against the beat grid, per tempo
 ```
 
-297 unit tests plus a four-scenario integration smoke suite over the built
-bundle. What each layer is for:
+312 unit tests, a four-scenario smoke suite and two real-time harnesses over the
+built bundle. What each layer is for:
 
 ## Unit tests — the engine is pure
 
@@ -126,6 +128,33 @@ to restore to.
 
 This covers what unit tests cannot: capability probing, the provider chain,
 scheduling, and the executors, without needing a Spotify install.
+
+## Playback — a client that behaves like the real one
+
+`npm run playback` is the harness that should have existed from the start.
+`scripts/simulator.mjs` models the one behaviour the smoke suite never did:
+**Spotify emits `songchange` for our own `next()`, exactly as it does for the
+user pressing skip**. Everything else follows from that — switch latency,
+`onprogress` every 100 ms, position advancing in real time, crossfade writes
+accepted or refused.
+
+It runs at wall-clock speed on purpose. The volume ramps and the scheduler use
+real timers, so compressing simulated playback makes a track end mid-fade and
+measures an artifact rather than the product — which is exactly what the first
+version of this harness did, and why it reported success on a broken build.
+
+## Situations — the sixteen named cases
+
+`npm run situations` answers the sixteen situations from the Phase 4 brief one
+at a time, each with what was expected, what actually happened, a verdict and a
+reason. Two levels are used, and each case says which:
+
+- **live** — a real-time session against the simulator, for anything about what
+  happens to playback (does the switch fire, does the level come back, does an
+  interruption break something).
+- **engine** — the shipped engine called directly, for anything about the
+  *decision* (does a key clash get a shorter blend than a perfect match), which
+  a volume trace cannot show.
 
 ## What the tests do not prove
 

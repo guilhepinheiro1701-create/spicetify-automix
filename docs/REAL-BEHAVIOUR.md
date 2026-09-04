@@ -90,7 +90,7 @@ Listener hears an overlap                                            ? follows f
 
 The last two steps are the ones that matter and the ones that cannot be
 verified here. If they do not hold on your client, the panel's Compatibility
-section will still say "Full DJ mode", because the writes were accepted — that
+section will still say "Overlap mode", because the writes were accepted — that
 is the honest limit of what can be detected from inside the renderer.
 
 ### Without crossfade (Spotify Free)
@@ -164,9 +164,10 @@ earlier so the cut itself lands on the boundary:
 ## Running the checks yourself
 
 ```bash
-npm run playback   # a real-time session against the simulator
-npm run timing     # where the switch lands, per tempo
-npm test           # the unit suite
+npm run playback     # a real-time session against the simulator
+npm run situations   # the sixteen named situations, with a verdict each
+npm run timing       # where the switch lands, per tempo
+npm test             # the unit suite
 ```
 
 In a real Spotify session, turn on Debug mode and use:

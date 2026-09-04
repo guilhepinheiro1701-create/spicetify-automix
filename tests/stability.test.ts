@@ -43,6 +43,9 @@ const boom = () => {
 };
 
 vi.mock("../src/platform/spicetify.js", () => ({
+  // The capability probe reads the raw global; give it a client with nothing
+  // optional on it, which is the Free-account shape these tests assume.
+  sp: () => ({ Player: {}, Platform: {}, Queue: { nextTracks: [] } }),
   isReady: () => true,
   waitForSpicetify: async () => true,
   getProgressMs: () => {
@@ -115,6 +118,9 @@ import { AudioEngine } from "../src/audio/audioEngine.js";
 import { VolumeController } from "../src/audio/volumeController.js";
 import { VolumeFadeExecutor } from "../src/audio/executors/volumeFadeExecutor.js";
 import { calculateTransition } from "../src/engine/transitionEngine.js";
+import { MusicAnalyzer } from "../src/analysis/analyzer.js";
+import { SettingsStore } from "../src/config/settings.js";
+import { SmartDj } from "../src/runtime/smartDj.js";
 import { analysis, capabilities, settings, track, execContext } from "./helpers.js";
 import type { TransitionPlan } from "../src/core/types.js";
 
@@ -342,5 +348,46 @@ describe("teardown", () => {
       engine.dispose();
       engine.dispose();
     }).not.toThrow();
+  });
+});
+
+describe("listeners do not accumulate", () => {
+  // Definition of done, item 9. A second `start()` — from a settings toggle, a
+  // hot reload, or a caller being defensive — must not leave two handlers on
+  // `songchange`, because then every track change plans and fires twice.
+  const build = () => {
+    const store = new Map<string, string>();
+    const storage = {
+      get: (k: string) => store.get(k) ?? null,
+      set: (k: string, v: string) => void store.set(k, v),
+    };
+    const analyzer = new MusicAnalyzer({ storage });
+    const settingsStore = new SettingsStore(storage);
+    return { dj: new SmartDj(analyzer, settingsStore, storage), analyzer };
+  };
+
+  const counts = () =>
+    Object.fromEntries(Object.entries(player.listeners).map(([k, v]) => [k, v.length]));
+
+  it("start() twice registers one set of player listeners", async () => {
+    const { dj, analyzer } = build();
+    await dj.start();
+    const first = counts();
+    await dj.start();
+    expect(counts()).toEqual(first);
+    dj.stop();
+    analyzer.dispose();
+  });
+
+  it("a start/stop/start cycle leaves exactly as many listeners as one start", async () => {
+    const { dj, analyzer } = build();
+    await dj.start();
+    const first = counts();
+    dj.stop();
+    for (const list of Object.values(player.listeners)) expect(list.length).toBe(0);
+    await dj.start();
+    expect(counts()).toEqual(first);
+    dj.stop();
+    analyzer.dispose();
   });
 });

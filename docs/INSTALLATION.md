@@ -105,11 +105,13 @@ is left behind in Spotify's own settings.
 Open the **Smart DJ** panel and look at the **Compatibility** section. It tells
 you what your client can actually do:
 
-- **Full DJ mode** — your client allows real audio overlap between tracks.
-- **Fade mode** — no overlap available (most likely a Free account on a recent
-  build, where Spotify gates crossfade behind Premium). Smart DJ still times the
-  switch musically, matches levels, and can skip dead intros. It just cannot
-  play two tracks at once, and it will not pretend to.
+- **Overlap mode** — your client accepted the crossfade writes, so Spotify's own
+  mixer can genuinely play the two tracks over each other.
+- **Phrase-Timed Fade** — no overlap available (most likely a Free account on a
+  recent build, where Spotify gates crossfade behind Premium). Smart DJ still
+  times the switch musically, matches levels, and can skip dead intros. It just
+  cannot play two tracks at once, and it will not pretend to: what you get is a
+  cut placed on a phrase line with a short dip over the seam, not a mix.
 - **Passive** — Smart DJ cannot affect playback on this client. Spotify behaves
   exactly as it would without it.
 

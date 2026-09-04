@@ -48,6 +48,12 @@ export class SpotifySimulator {
     this.nextCalls = 0;
     this.seekCalls = [];
     this.volumeWrites = [];
+    /**
+     * Flip to make the client refuse volume writes, as it does while the
+     * player is reconnecting. The extension must survive it and still put the
+     * user's level back once writes are accepted again.
+     */
+    this.rejectVolumeWrites = false;
 
     this.clock = null;
     this.startedAt = 0;
@@ -68,6 +74,29 @@ export class SpotifySimulator {
 
   current() {
     return this.playlist[this.index] ?? null;
+  }
+
+  /** The one place a volume write lands, so refusals are modelled in both APIs. */
+  applyVolume(v) {
+    if (this.rejectVolumeWrites) {
+      this.record("VOLUME_WRITE_REJECTED", { requested: Number(v.toFixed(3)) });
+      throw new Error("player is not available");
+    }
+    this.volume = v;
+    this.volumeWrites.push(Number(v.toFixed(3)));
+  }
+
+  /**
+   * The user picking a different track altogether, rather than pressing skip.
+   *
+   * Mechanically distinct from `advance()`: playback jumps somewhere we did not
+   * queue, so nothing about our plan for the old pair still applies.
+   */
+  jumpTo(index, cause) {
+    this.index = index;
+    this.positionMs = 0;
+    this.record("TRACK_CHANGED", { cause, to: this.current()?.name });
+    this.emit("songchange", this.current());
   }
 
   upcoming() {
@@ -192,10 +221,7 @@ export class SpotifySimulator {
         getDuration: () => sim.current()?.durationMs ?? 0,
         isPlaying: () => sim.playing,
         getRepeat: () => sim.repeat,
-        setVolume: (v) => {
-          sim.volume = v;
-          sim.volumeWrites.push(Number(v.toFixed(3)));
-        },
+        setVolume: (v) => sim.applyVolume(v),
         getVolume: () => sim.volume,
         next: () => {
           sim.nextCalls++;
@@ -217,10 +243,7 @@ export class SpotifySimulator {
       },
       Platform: {
         PlaybackAPI: {
-          setVolume: (v) => {
-            sim.volume = v;
-            sim.volumeWrites.push(Number(v.toFixed(3)));
-          },
+          setVolume: (v) => sim.applyVolume(v),
           get _volume() {
             return sim.volume;
           },

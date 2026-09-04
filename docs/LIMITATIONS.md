@@ -81,7 +81,7 @@ Four undocumented write paths are attempted (`ConfigAPI`, `PlayerAPI._prefs`,
 and two Cosmos routes). If all four refuse, the tier drops to **fade** and the
 panel says so.
 
-**What fade mode still does**, and this is the part worth knowing:
+**What the Phrase-Timed Fade still does**, and this is the part worth knowing:
 
 - picks the same musical moment for the switch — a phrase boundary chosen from
   the structure

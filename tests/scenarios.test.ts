@@ -312,3 +312,54 @@ describe("extremes stay safe", () => {
     });
   }
 });
+
+describe("a harmonic clash shortens the overlap, not the cut", () => {
+  // 8A. Same tempo, same structure, same energy: key is the only variable, so
+  // any difference in length is attributable to it.
+  const TECH: Shape = { bpm: 124, key: 9, mode: 0, energy: 0.8, loudness: -7, durationSec: 300, introSec: 30, outroSec: 40 };
+  const SAME_KEY: Shape = { ...TECH, bpm: 123 };
+  const CLASH: Shape = { ...SAME_KEY, key: 3, mode: 1 };
+  const ENERGY_MOVE: Shape = { ...SAME_KEY, key: 11 };
+
+  it("a distant key overlaps for less time than a perfect match", () => {
+    const ok = plan(TECH, SAME_KEY);
+    const bad = plan(TECH, CLASH);
+    console.log(report("same key", ok), "|", report("clashing key", bad));
+    expect(bad.compatibility.key.score).toBeLessThan(0.45);
+    // The defect this locks: both used to get a full sixteen-beat phrase,
+    // because key only reached length through the overall band.
+    expect(bad.durationSec).toBeLessThan(ok.durationSec);
+    expect(bad.durationBeats).toBeLessThanOrEqual(8);
+  });
+
+  it("says so in the rationale rather than silently shortening", () => {
+    const bad = plan(TECH, CLASH);
+    expect(bad.rationale.some((r) => r.includes("keys clash"))).toBe(true);
+  });
+
+  it("leaves the cut path alone — a clash costs nothing when nothing overlaps", () => {
+    const okFade = plan(TECH, SAME_KEY, { tier: "fade" });
+    const badFade = plan(TECH, CLASH, { tier: "fade" });
+    expect(badFade.executor).toBe("volume-fade");
+    expect(badFade.fade.outSec).toBeCloseTo(okFade.fade.outSec, 2);
+  });
+
+  it("does not punish a ±2 energy move, which is a legitimate DJ step", () => {
+    const ok = plan(TECH, SAME_KEY);
+    const move = plan(TECH, ENERGY_MOVE);
+    expect(move.compatibility.key.score).toBeGreaterThanOrEqual(0.45);
+    expect(move.durationSec).toBeGreaterThanOrEqual(ok.durationSec * 0.9);
+  });
+
+  it("does not punish an unknown key", () => {
+    const unknownKey = plan(TECH, { ...SAME_KEY, key: -1, mode: -1 });
+    const ok = plan(TECH, SAME_KEY);
+    expect(unknownKey.durationBeats).toBeGreaterThan(8);
+    expect(unknownKey.durationSec).toBeGreaterThanOrEqual(ok.durationSec * 0.75);
+  });
+
+  it("respects the harmonic mixing switch", () => {
+    const off = plan(TECH, CLASH, { settings: { harmonicMixing: false } });
+    expect(off.durationBeats ?? 0).toBeGreaterThan(8);
+  });
+});

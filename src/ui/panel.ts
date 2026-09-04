@@ -198,11 +198,14 @@ function capabilitySection(caps: CapabilitySet | null): HTMLElement {
   }
 
   const tierTone = caps.tier === "dj" ? "ok" : caps.tier === "fade" ? "warn" : "bad";
+  // Named for what was actually established, not for what it would be nice to
+  // claim: "dj" means the client accepted the crossfade writes, and "fade"
+  // means a phrase-timed cut with a dip over it — which is not a DJ mix.
   const tierText =
     caps.tier === "dj"
-      ? "Full DJ mode — real audio overlap available"
+      ? "Overlap mode — this client accepts the crossfade writes, so switches can really overlap"
       : caps.tier === "fade"
-        ? "Fade mode — no audio overlap on this client, switches are shaped with volume instead"
+        ? "Phrase-Timed Fade — no overlap here; the switch lands on the phrase line under a short dip"
         : "Passive — Smart DJ cannot affect playback here";
 
   const versions = [

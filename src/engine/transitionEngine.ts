@@ -67,6 +67,18 @@ export interface TransitionInput {
 
 const NEUTRAL_COMPONENT = { score: 0.5, confidence: 0, detail: "n/a" };
 
+/**
+ * Below this harmonic score, an overlap is capped at half a phrase.
+ *
+ * Chosen against the Camelot score table rather than by taste: it passes the
+ * ±2 energy moves (0.55–0.62) and an *unknown* key (0.5, which must never be
+ * punished), and catches the diagonal (0.42) and distant (≤0.34) relations —
+ * the ones that actually beat against each other.
+ */
+const KEY_CLASH_SCORE = 0.45;
+/** Half a phrase. Long enough to be a blend, short enough not to dwell on a clash. */
+const KEY_CLASH_OVERLAP_BEATS = 8;
+
 /** Plan used when there is nothing to mix into, or nothing we may do. */
 function passthroughPlan(input: TransitionInput, reason: string): TransitionPlan {
   const durationSec = input.fromAnalysis.durationMs / 1000;
@@ -496,6 +508,22 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
     desiredSec = ((settings.minDurationSec + settings.maxDurationSec) / 2) * profile.lengthBias;
   }
 
+  // Two keys can only beat against each other while both are audible, so a
+  // clash caps the *overlap* and leaves the cut path alone — on a cut the
+  // tonalities never sound together, and shortening it would buy nothing.
+  //
+  // Without this the band is the only thing keys affect, and a weighted average
+  // is too forgiving to act on the project's own stated rule that clashing keys
+  // are the most viscerally wrong thing a mix can do: a tritone pair that scores
+  // GOOD overall was getting the same full phrase of overlap as a perfect match.
+  const keyClash =
+    overlapping && settings.harmonicMixing && compatibility.key.score < KEY_CLASH_SCORE;
+  const keyClashCapSec = !keyClash
+    ? Number.POSITIVE_INFINITY
+    : bpmA
+      ? beatsToSeconds(KEY_CLASH_OVERLAP_BEATS, bpmA)
+      : profile.maxSec * 0.5;
+
   // Hard caps: the client's own crossfade ceiling, the user's settings, the
   // style, and never more than a fifth of the track. These may not be exceeded.
   const hardMax = Math.min(
@@ -503,6 +531,7 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
     // runway — otherwise a mediocre pair with a huge runway outlasts a perfect
     // pair with a modest one.
     profile.maxSec * strategy.band.windowUsage,
+    keyClashCapSec,
     profile.maxSec,
     settings.maxDurationSec,
     overlapping ? MAX_NATIVE_CROSSFADE_SEC : Number.POSITIVE_INFINITY,
@@ -638,6 +667,12 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
     );
   }
   if (phraseAlignment) rationale.push("switch lands on a phrase boundary");
+  if (keyClash) {
+    rationale.push(
+      `keys clash (${compatibility.key.detail}) — overlap held to ` +
+        `${KEY_CLASH_OVERLAP_BEATS} beats so the two tonalities are not left ringing together`,
+    );
+  }
   if (!overlapping) {
     rationale.push(
       `no overlap available, so this is a cut: ${fade.outSec.toFixed(2)}s dip to ` +

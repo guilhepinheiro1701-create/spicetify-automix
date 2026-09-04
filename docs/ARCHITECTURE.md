@@ -8,7 +8,7 @@ modal, so it reads as part of the client rather than beside it.
 
 The code splits into layers that only talk downward. The engine has no idea
 Spotify exists; the platform layer has no idea what a Camelot code is. That is
-what makes the algorithm testable without a Spotify client — 297 unit tests run in
+what makes the algorithm testable without a Spotify client — 312 unit tests run in
 Node with no browser and no mocking of Spicetify, and `npm run smoke` boots the
 real bundle against a stubbed client to cover the layers that are not pure.
 

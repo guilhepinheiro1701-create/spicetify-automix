@@ -90,6 +90,8 @@ export class SmartDj {
   /** Reorders performed for the currently playing track, to bound the replan loop. */
   private reordersThisTrack = 0;
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Guards against stacking replan chains when songchange fires repeatedly. */
+  private replanPending = false;
   /** URIs we have already promoted, so we never shuffle the same track twice. */
   private promoted = new Set<string>();
 
@@ -191,6 +193,7 @@ export class SmartDj {
     this.handled.clear();
     this.promoted.clear();
     this.reordersThisTrack = 0;
+    this.replanPending = false;
     this.planToken++;
     this.started = false;
     this.setStatus({ phase: "disabled", progress: 0, plan: null, etaSec: null });
@@ -266,6 +269,10 @@ export class SmartDj {
    * rather than the controller sitting idle for the rest of the session.
    */
   private async replanAfterTransition(): Promise<void> {
+    // Several songchanges in quick succession must not stack up waiters, each
+    // of which would call refreshPlan when the engine finally goes idle.
+    if (this.replanPending) return;
+    this.replanPending = true;
     const deadline = Date.now() + 15_000;
     while (this.audio.isRunning && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 120));
@@ -274,6 +281,7 @@ export class SmartDj {
       log.warn("the transition did not finish in time — replanning anyway");
       this.audio.abort("transition overran");
     }
+    this.replanPending = false;
     this.plan = null;
     this.setStatus({ phase: "analyzing", progress: 0, plan: null, etaSec: null });
     if (this.handled.size > 200) this.handled.clear();
