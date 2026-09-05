@@ -19,6 +19,14 @@ export interface ExecutionContext {
    * tell them apart — which is precisely what made it abort its own fade-in.
    */
   expectTrackChange(): void;
+  /**
+   * Withdraw that expectation, when the switch turned out not to happen.
+   *
+   * Leaving it set makes the controller read the *user's* next skip as our own
+   * and let a dead transition run on, so anything that calls
+   * `expectTrackChange` must retract it on the failure path.
+   */
+  cancelTrackChangeExpectation(): void;
   /** Resolves when the client actually reports the new track, or on timeout. */
   awaitTrackChange(timeoutMs: number): Promise<number | null>;
   /** Called with 0..1 as the transition runs. */

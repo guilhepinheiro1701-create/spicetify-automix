@@ -112,6 +112,10 @@ export class VolumeFadeExecutor implements TransitionExecutor {
     // synchronously on some clients.
     ctx.expectTrackChange();
     if (!playerNext()) {
+      // The switch is not coming, so the controller must stop treating the next
+      // track change as ours — otherwise a skip in the following seconds is
+      // misread as our own and the abort it needs never happens.
+      ctx.cancelTrackChangeExpectation();
       record.add("TRANSITION_FAILED", "Player.next() was rejected");
       return { status: "failed", note: "Player.next() was rejected" };
     }
@@ -131,7 +135,10 @@ export class VolumeFadeExecutor implements TransitionExecutor {
     }
 
     // ── 3. Land on a downbeat ──────────────────────────────────────────────
-    if (plan.entryPointSec > 0.5) {
+    // Only when the client actually confirmed the new track. If the change was
+    // never observed we may still be on the *outgoing* one, and seeking then
+    // jumps the track the listener is in the middle of hearing.
+    if (plan.entryPointSec > 0.5 && switchedMs !== null) {
       if (seekMs(plan.entryPointSec * 1000)) {
         record.add("SEEK" as never, `${plan.entryPointSec.toFixed(1)}s into the incoming track`);
       }

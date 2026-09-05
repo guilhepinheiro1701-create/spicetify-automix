@@ -218,8 +218,17 @@ describe("transition memory versioning", () => {
     const storage = memoryStorage();
     const first = new TransitionMemory(storage);
     const plan = planFor(1);
-    first.remember(plan, "balanced");
-    first.remember(plan, "balanced");
+
+    // Two *sightings*, not two replans of the same one: remember() runs on
+    // every replan, so back-to-back calls are one encounter by design.
+    vi.useFakeTimers();
+    try {
+      first.remember(plan, "balanced");
+      vi.advanceTimersByTime(30 * 60 * 1000);
+      first.remember(plan, "balanced");
+    } finally {
+      vi.useRealTimers();
+    }
     first.flush();
 
     const second = new TransitionMemory(storage);
@@ -244,8 +253,14 @@ describe("transition memory versioning", () => {
       settings: settings(),
       capabilities: capabilities("dj"),
     });
-    memory.remember(bad, "balanced");
-    memory.remember(bad, "balanced");
+    vi.useFakeTimers();
+    try {
+      memory.remember(bad, "balanced");
+      vi.advanceTimersByTime(30 * 60 * 1000);
+      memory.remember(bad, "balanced");
+    } finally {
+      vi.useRealTimers();
+    }
     const weak = memory.recurringWeakPairs();
     expect(weak).toHaveLength(1);
     expect(weak[0]!.timesSeen).toBe(2);

@@ -89,5 +89,8 @@ export const INTENT_PROFILES: Record<DjIntent, IntentProfile> = {
   },
 };
 
+/** As `styleProfile`: a prototype key must not resolve to a Function. */
 export const intentProfile = (id: DjIntent): IntentProfile =>
-  INTENT_PROFILES[id] ?? INTENT_PROFILES.balanced;
+  Object.prototype.hasOwnProperty.call(INTENT_PROFILES, id)
+    ? INTENT_PROFILES[id]
+    : INTENT_PROFILES.balanced;

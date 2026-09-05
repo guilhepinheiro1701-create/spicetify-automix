@@ -28,13 +28,22 @@ export function sanitize(raw: unknown): Settings {
   const num = (v: unknown, fallback: number, lo: number, hi: number): number =>
     typeof v === "number" && Number.isFinite(v) ? clamp(v, lo, hi) : fallback;
 
+  // `in` walks the prototype chain, so it answers true for "constructor",
+  // "toString" and friends. A stored settings blob carrying one of those then
+  // passed validation, and the profile lookup returned a *function* — which is
+  // not undefined, so the `?? fallback` at the lookup site did not catch it
+  // either. The result was a plan with no length bias, a zero-second blend, and
+  // Smart DJ doing nothing at all with no error anywhere.
+  const owns = (obj: object, key: string): boolean =>
+    Object.prototype.hasOwnProperty.call(obj, key);
+
   const intent: DjIntent =
-    typeof input.intent === "string" && input.intent in INTENT_PROFILES
+    typeof input.intent === "string" && owns(INTENT_PROFILES, input.intent)
       ? (input.intent as DjIntent)
       : d.intent;
 
   const style: TransitionStyle =
-    typeof input.style === "string" && input.style in STYLE_PROFILES
+    typeof input.style === "string" && owns(STYLE_PROFILES, input.style)
       ? (input.style as TransitionStyle)
       : d.style;
 

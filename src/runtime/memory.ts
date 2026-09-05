@@ -57,6 +57,15 @@ export interface MemoryStorage {
 const keyFor = (fromUri: string, toUri: string, intent: string): string =>
   `${fromUri} ${toUri} ${intent}`;
 
+/**
+ * Replans of the same pair inside this window are one sighting, not several.
+ *
+ * Longer than a typical track, so the replans that happen while one pair is on
+ * screen collapse together; short enough that meeting the pair again later in
+ * a session counts properly.
+ */
+const SAME_PLAYTHROUGH_MS = 10 * 60 * 1000;
+
 export class TransitionMemory {
   private entries = new Map<string, RememberedTransition>();
   private dirty = false;
@@ -118,7 +127,15 @@ export class TransitionMemory {
       intent,
       algorithmVersion: ALGORITHM_VERSION,
       at: Date.now(),
-      timesSeen: (previous?.timesSeen ?? 0) + 1,
+      // `remember` runs on every replan — a songchange, a settings change, a
+      // queue edit — so counting calls would report a pairing met once as
+      // "seen" three or four times, and `recurringWeakPairs` would call a
+      // one-off a recurring problem. Only a sighting outside the current
+      // playthrough counts as a new one.
+      timesSeen:
+        previous && Date.now() - previous.at < SAME_PLAYTHROUGH_MS
+          ? previous.timesSeen
+          : (previous?.timesSeen ?? 0) + 1,
     };
 
     // Refresh LRU position.

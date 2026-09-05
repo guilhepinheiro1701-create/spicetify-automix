@@ -111,5 +111,14 @@ export const STYLE_PROFILES: Record<TransitionStyle, StyleProfile> = {
   },
 };
 
+/**
+ * Look up a style, defending against a key that only exists on the prototype.
+ *
+ * A plain `STYLE_PROFILES[id]` answers with a *function* for "constructor" or
+ * "toString", which the `??` fallback does not catch — so the caller ends up
+ * reading `lengthBias` off `Object` and getting undefined.
+ */
 export const styleProfile = (id: TransitionStyle): StyleProfile =>
-  STYLE_PROFILES[id] ?? STYLE_PROFILES.dj;
+  Object.prototype.hasOwnProperty.call(STYLE_PROFILES, id)
+    ? STYLE_PROFILES[id]
+    : STYLE_PROFILES.dj;

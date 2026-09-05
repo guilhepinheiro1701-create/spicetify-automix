@@ -46,6 +46,13 @@ function sectionRoleAt(structure: TrackStructure | null, timeSec: number): strin
 const MIN_TRACK_SEC = 25;
 /** Ignore transitions this close to the very start of a track. */
 const MIN_PLAYED_SEC = 5;
+/**
+ * How far past the planned exit the playhead may be and still count as "now".
+ *
+ * Covers ordinary scheduling jitter. Anything beyond it means the position
+ * moved by something other than playback — a seek — and the plan is stale.
+ */
+const OVERSHOOT_TOLERANCE_SEC = 1.5;
 
 export interface SmartDjEvents extends Record<string, unknown> {
   status: TransitionStatus;
@@ -274,8 +281,12 @@ export class SmartDj {
     if (this.replanPending) return;
     this.replanPending = true;
     const deadline = Date.now() + 15_000;
-    while (this.audio.isRunning && Date.now() < deadline) {
+    while (this.started && this.audio.isRunning && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 120));
+    }
+    if (!this.started) {
+      this.replanPending = false;
+      return;
     }
     if (this.audio.isRunning) {
       log.warn("the transition did not finish in time — replanning anyway");
@@ -301,6 +312,13 @@ export class SmartDj {
 
   /** Recompute the plan for the current pair and re-arm the scheduler. */
   async refreshPlan(): Promise<void> {
+    // A replan can be in flight when the controller is torn down: the settle
+    // wait in replanAfterTransition, the retry after a queue reorder, or the
+    // replan fire() does when the queue moved. Without this, that continuation
+    // arms the scheduler *after* stop() — a live timer against a disposed
+    // engine, which can still fire a transition.
+    if (!this.started) return;
+
     const token = ++this.planToken;
     const settings = this.settings.get();
 
@@ -357,6 +375,11 @@ export class SmartDj {
           return;
         }
       }
+
+      // tryReorder above awaits queue mutations and a retry sleep. A skip during
+      // that window bumps the token, and without this check the plan computed
+      // for the *previous* pair goes on to arm the scheduler.
+      if (token !== this.planToken) return;
 
       const plan = calculateTransition({
         fromTrack: from,
@@ -493,6 +516,21 @@ export class SmartDj {
     const live = player.getCurrentTrack();
     if (!live || live.uri !== plan.from.uri) {
       this.disarm("track changed underneath the plan");
+      return;
+    }
+
+    // The playhead can jump between arming and firing. The scheduler treats a
+    // target that is already behind as "fire now", so a listener scrubbing into
+    // the tail would get the transition at whatever arbitrary point they landed
+    // on rather than at the musical moment it was computed for.
+    const targetSec = plan.startPointSec - plan.leadInSec;
+    const positionSec = player.getProgressMs() / 1000;
+    if (positionSec > targetSec + OVERSHOOT_TOLERANCE_SEC) {
+      log.info(
+        `playhead jumped past the planned exit (${positionSec.toFixed(1)}s vs ` +
+          `${targetSec.toFixed(1)}s) — replanning instead of firing late`,
+      );
+      await this.refreshPlan();
       return;
     }
 

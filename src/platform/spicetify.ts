@@ -75,9 +75,24 @@ export function getRepeatMode(): number {
   }
 }
 
+/**
+ * Trigger the track change.
+ *
+ * Optional chaining on the *call* — `Player?.next?.()` — evaluates to
+ * `undefined` when the method is missing, which is indistinguishable from a
+ * successful call that returns nothing. Reporting success for a call that
+ * never happened is worse than failing: the executor goes on to wait for a
+ * track change that is never coming. So the method is checked for existence
+ * before it is trusted.
+ */
 export function next(): boolean {
+  const p = sp()?.Player;
+  if (typeof p?.next !== "function") {
+    log.error("Player.next() does not exist on this client — cannot switch track");
+    return false;
+  }
   try {
-    sp()?.Player?.next?.();
+    p.next();
     return true;
   } catch (err) {
     log.error("Player.next() failed", err);
@@ -86,8 +101,13 @@ export function next(): boolean {
 }
 
 export function seekMs(ms: number): boolean {
+  const p = sp()?.Player;
+  if (typeof p?.seek !== "function") {
+    log.warn("Player.seek() does not exist on this client");
+    return false;
+  }
   try {
-    sp()?.Player?.seek?.(Math.max(0, Math.round(ms)));
+    p.seek(Math.max(0, Math.round(ms)));
     return true;
   } catch (err) {
     log.warn("Player.seek() failed", err);
@@ -344,10 +364,18 @@ export function canMutateQueue(): boolean {
   return typeof s?.addToQueue === "function" && typeof s?.removeFromQueue === "function";
 }
 
-/** Append a track to the user queue. Resolves false rather than throwing. */
+/**
+ * Append a track to the user queue. Resolves false rather than throwing.
+ *
+ * Existence is checked before the call for the same reason as `next()`, and it
+ * matters more here: a `removeFromQueue` that silently did nothing while
+ * `addToQueue` worked would duplicate the track in the user's queue.
+ */
 export async function addToQueue(uri: string): Promise<boolean> {
+  const s = sp();
+  if (typeof s?.addToQueue !== "function") return false;
   try {
-    await sp()?.addToQueue?.([{ uri }]);
+    await s.addToQueue([{ uri }]);
     return true;
   } catch (err) {
     log.warn("addToQueue failed", err);
@@ -357,8 +385,10 @@ export async function addToQueue(uri: string): Promise<boolean> {
 
 /** Remove a track from the user queue. Only works for user-queued entries. */
 export async function removeFromQueue(uri: string): Promise<boolean> {
+  const s = sp();
+  if (typeof s?.removeFromQueue !== "function") return false;
   try {
-    await sp()?.removeFromQueue?.([{ uri }]);
+    await s.removeFromQueue([{ uri }]);
     return true;
   } catch (err) {
     log.warn("removeFromQueue failed", err);

@@ -219,6 +219,7 @@ export function execContext(
     signal?: AbortSignal;
     trackChangeMs?: number | null;
     onExpect?: () => void;
+    onCancelExpect?: () => void;
     onProgress?: (p: number) => void;
   } = {},
 ) {
@@ -233,6 +234,7 @@ export function execContext(
     volume,
     record,
     expectTrackChange: over.onExpect ?? (() => undefined),
+    cancelTrackChangeExpectation: over.onCancelExpect ?? (() => undefined),
     awaitTrackChange: async () =>
       over.trackChangeMs === undefined ? 40 : over.trackChangeMs,
     onProgress: over.onProgress ?? (() => undefined),

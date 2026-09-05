@@ -182,9 +182,17 @@ export class VolumeController {
         if ((isFinal || changedEnough) && !this.write(level)) {
           return this.stopRamp("failed");
         }
-        request.onTick?.(t, level);
 
+        // Stop the ramp *before* handing control to the caller's callback. If
+        // that callback throws, this interval would otherwise keep firing
+        // forever against a promise that can never resolve — which is how the
+        // ramp would hold the volume down for the rest of the session.
         if (isFinal) this.stopRamp("completed");
+        try {
+          request.onTick?.(t, level);
+        } catch (err) {
+          log.warn("a progress listener threw during the ramp", err);
+        }
       }, TICK_MS);
     });
   }

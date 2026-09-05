@@ -79,6 +79,10 @@ const KEY_CLASH_SCORE = 0.45;
 /** Half a phrase. Long enough to be a blend, short enough not to dwell on a clash. */
 const KEY_CLASH_OVERLAP_BEATS = 8;
 
+/** Earliest an exit may sit, and how much track must remain after it. */
+const MIN_EXIT_SEC = 1;
+const MIN_TAIL_SEC = 0.5;
+
 /** Plan used when there is nothing to mix into, or nothing we may do. */
 function passthroughPlan(input: TransitionInput, reason: string): TransitionPlan {
   const durationSec = input.fromAnalysis.durationMs / 1000;
@@ -407,6 +411,18 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
   const gridB = toAnalysis.grid ?? null;
   const trackDurationSec = fromAnalysis.durationMs / 1000 || fromTrack.durationMs / 1000;
 
+  // The exit has to sit at least a second in and half a second before the end.
+  // A track with no room for both cannot host a transition, and forcing one
+  // produced an exit point *past the end of the track* — the clamp's lower
+  // bound winning over its upper one. This is arithmetic, not policy: the
+  // controller has its own, much larger, minimum track length.
+  if (!(trackDurationSec > MIN_EXIT_SEC + MIN_TAIL_SEC)) {
+    return passthroughPlan(
+      input,
+      `track is ${trackDurationSec.toFixed(1)}s — too short to place an exit in`,
+    );
+  }
+
   const sameAlbumConsecutive =
     Boolean(fromTrack.albumUri) && fromTrack.albumUri === toTrack.albumUri;
 
@@ -564,7 +580,7 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
     minPlayedFraction: 0.4,
     usePhrases: settings.phraseMatching,
   });
-  let startPointSec = clamp(exitCue.time, 1, Math.max(1, trackDurationSec - 0.5));
+  let startPointSec = clamp(exitCue.time, MIN_EXIT_SEC, trackDurationSec - MIN_TAIL_SEC);
 
   const phraseAlignment = Boolean(
     settings.phraseMatching && gridA && isOnPhrase(gridA, startPointSec, 0.2),
@@ -581,12 +597,12 @@ export function calculateTransition(input: TransitionInput): TransitionPlan {
       ? startPointSec
       : nearestDownbeat(gridA, startPointSec);
 
-    if (onGrid > 1 && onGrid < trackDurationSec - 0.5) {
+    if (onGrid > MIN_EXIT_SEC && onGrid < trackDurationSec - MIN_TAIL_SEC) {
       const rawOffset = gridPhaseOffsetSec(gridB) + settings.switchLatencyMs / 1000;
       const candidate = onGrid - rawOffset;
       // Only take the compensation if it keeps us inside the track and does not
       // drag the exit back off the phrase we just chose.
-      if (candidate > 1 && candidate < trackDurationSec - 0.5) {
+      if (candidate > MIN_EXIT_SEC && candidate < trackDurationSec - MIN_TAIL_SEC) {
         startPointSec = candidate;
         phaseOffsetSec = rawOffset;
       } else {

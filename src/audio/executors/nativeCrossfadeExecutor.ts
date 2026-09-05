@@ -91,10 +91,17 @@ async function reportProgress(durationMs: number, ctx: ExecutionContext): Promis
   return new Promise((resolve) => {
     const tick = setInterval(() => {
       const p = Math.min(1, (Date.now() - started) / durationMs);
-      ctx.onProgress(p);
-      if (p >= 1 || ctx.signal.aborted) {
+      // Decide whether this is the last tick before calling out, so a throwing
+      // listener cannot strand the interval and leave this promise unresolved.
+      const done = p >= 1 || ctx.signal.aborted;
+      if (done) {
         clearInterval(tick);
         resolve();
+      }
+      try {
+        ctx.onProgress(p);
+      } catch {
+        /* a listener's problem, not the transition's */
       }
     }, 50);
   });

@@ -23,6 +23,8 @@ const player = {
   seekCalls: [] as number[],
   currentUri: "spotify:track:aaaaaaaaaaaaaaaaaaaaaa",
   failEverything: false,
+  /** Upcoming tracks the controller can plan against. Empty unless a test sets it. */
+  upcoming: [] as { uri: string; name: string }[],
   listeners: {} as Record<string, ((e: unknown) => void)[]>,
 };
 
@@ -35,12 +37,25 @@ function resetPlayer(): void {
   player.seekCalls = [];
   player.currentUri = "spotify:track:aaaaaaaaaaaaaaaaaaaaaa";
   player.failEverything = false;
+  player.upcoming = [];
   player.listeners = {};
 }
 
 const boom = () => {
   if (player.failEverything) throw new Error("client API failed");
 };
+
+const upcomingRefs = () =>
+  player.upcoming.map((t) => ({
+    uri: t.uri,
+    id: t.uri.split(":")[2] as string,
+    name: t.name,
+    artists: ["B"],
+    albumUri: "spotify:album:2",
+    durationMs: player.duration,
+    isLocal: false,
+    provider: "context" as const,
+  }));
 
 vi.mock("../src/platform/spicetify.js", () => ({
   // The capability probe reads the raw global; give it a client with nothing
@@ -96,8 +111,8 @@ vi.mock("../src/platform/spicetify.js", () => ({
       provider: "context",
     };
   },
-  getNextTrack: () => null,
-  getUpcomingTracks: () => [],
+  getNextTrack: () => upcomingRefs()[0] ?? null,
+  getUpcomingTracks: (limit = 5) => upcomingRefs().slice(0, limit),
   on: (event: string, fn: (e: unknown) => void) => {
     (player.listeners[event] ??= []).push(fn);
     return () => {
@@ -387,6 +402,85 @@ describe("listeners do not accumulate", () => {
     for (const list of Object.values(player.listeners)) expect(list.length).toBe(0);
     await dj.start();
     expect(counts()).toEqual(first);
+    dj.stop();
+    analyzer.dispose();
+  });
+});
+
+describe("a replan in flight cannot outlive the controller", () => {
+  // refreshPlan is reachable after stop(): the settle wait in
+  // replanAfterTransition, the retry after a queue reorder, and the replan
+  // fire() does when the queue moved are all continuations that resume later.
+  // Arming from one of those leaves a live timer against a disposed engine.
+  const build = () => {
+    const store = new Map<string, string>();
+    const storage = {
+      get: (k: string) => store.get(k) ?? null,
+      set: (k: string, v: string) => void store.set(k, v),
+    };
+    const analyzer = new MusicAnalyzer({ storage });
+    return { dj: new SmartDj(analyzer, new SettingsStore(storage), storage), analyzer };
+  };
+
+  it("refreshPlan does nothing once stopped", async () => {
+    // Without something to mix into there is nothing to arm, so the test would
+    // pass whether or not the guard exists.
+    player.upcoming = [{ uri: "spotify:track:cccccccccccccccccccccc", name: "Next" }];
+    const { dj, analyzer } = build();
+    await dj.start();
+    await vi.advanceTimersByTimeAsync(50);
+    dj.stop();
+
+    await dj.refreshPlan();
+    expect(dj.getStatus().phase).not.toBe("armed");
+    analyzer.dispose();
+  });
+
+  it("leaves no timer behind that could still fire a transition", async () => {
+    player.upcoming = [{ uri: "spotify:track:cccccccccccccccccccccc", name: "Next" }];
+    const { dj, analyzer } = build();
+    await dj.start();
+    await vi.advanceTimersByTimeAsync(50);
+    dj.stop();
+    await dj.refreshPlan();
+
+    // Push the playhead past any exit point a plan could have chosen, so an
+    // armed scheduler would certainly fire, then let the clock run.
+    const before = player.nextCalls;
+    player.position = player.duration - 100;
+    await vi.advanceTimersByTimeAsync(600_000);
+
+    expect(player.nextCalls).toBe(before);
+    expect(player.volumeCalls.length).toBe(0);
+    analyzer.dispose();
+  });
+});
+
+describe("a seek past the planned exit does not fire a late transition", () => {
+  // The scheduler reads a target that is already behind as "fire now", so
+  // scrubbing into the tail used to start the transition wherever the listener
+  // happened to land rather than on the musical moment it was computed for.
+  it("replans instead of firing at an arbitrary point", async () => {
+    player.upcoming = [{ uri: "spotify:track:cccccccccccccccccccccc", name: "Next" }];
+    const store = new Map<string, string>();
+    const storage = {
+      get: (k: string) => store.get(k) ?? null,
+      set: (k: string, v: string) => void store.set(k, v),
+    };
+    const analyzer = new MusicAnalyzer({ storage });
+    const dj = new SmartDj(analyzer, new SettingsStore(storage), storage);
+
+    await dj.start();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(dj.getStatus().phase).toBe("armed");
+
+    // Scrub deep into the tail, well past whatever exit was planned.
+    player.position = player.duration - 200;
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(player.nextCalls).toBe(0);
+    expect(player.volumeCalls.length).toBe(0);
+
     dj.stop();
     analyzer.dispose();
   });

@@ -126,16 +126,27 @@ export class AudioEngine {
         this.uriBeforeSwitch = getCurrentTrack()?.uri ?? null;
         this.expectingTrackChangeUntil = Date.now() + EXPECT_TRACK_CHANGE_WINDOW_MS;
       },
+      cancelTrackChangeExpectation: () => this.clearTrackChangeExpectation(),
       awaitTrackChange: (timeoutMs) => this.awaitTrackChange(timeoutMs, signal),
       onProgress: (p) => this.events.emit("progress", { progress: p }),
     };
 
     try {
       // Start at the rung the plan asked for, then walk down on failure.
-      const startIndex = Math.max(
-        0,
-        this.ladder.findIndex((e) => e.id === plan.executor),
-      );
+      //
+      // A plan naming an executor this build does not have must stand down, not
+      // start at the top: `Math.max(0, -1)` silently promoted such a plan to the
+      // most invasive rung available, which is the opposite of what an unknown
+      // executor should mean.
+      const startIndex = this.ladder.findIndex((e) => e.id === plan.executor);
+      if (startIndex < 0) {
+        const note = `no executor named "${plan.executor}" on this build`;
+        log.error(`${note} — standing down rather than guessing`);
+        record.add("TRANSITION_FAILED", note);
+        const outcome: ExecutionOutcome = { status: "failed", note };
+        this.events.emit("finish", { plan, outcome, executor: "none" });
+        return outcome;
+      }
 
       let lastNote = "no executor accepted the plan";
       for (let i = startIndex; i < this.ladder.length; i++) {
